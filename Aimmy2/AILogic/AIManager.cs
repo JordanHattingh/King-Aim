@@ -1,5 +1,6 @@
 ﻿using AILogic;
 using Aimmy2.Class;
+using Aimmy2.Gamepad;
 using Class;
 using InputLogic;
 using Microsoft.ML.OnnxRuntime;
@@ -119,6 +120,47 @@ namespace Aimmy2.AILogic
 
         private readonly CaptureManager _captureManager = new();
         private readonly StickyAimSelector _stickyAimSelector = new();
+
+        // Gamepad assist pipeline (parallel to the mouse-aim path above; StickyAimSelector still
+        // drives MouseManager.MoveCrosshair unchanged. Track/target/gamepad only ever produce stick output.)
+        private readonly TrackManager _trackManager = new();
+        private readonly TargetSelector _targetSelector = new();
+        private readonly GamepadAssistController _gamepadAssistController = new();
+        private IGamepadOutput? _gamepadOutput;
+        private long _gamepadFrameCounter;
+        private DateTime _lastGamepadUpdate = DateTime.UtcNow;
+
+        public TargetMode GamepadTargetMode { get; set; } = TargetMode.EnemyOnly;
+        public SemanticRole GamepadRoleFilter { get; set; } = SemanticRole.Enemy;
+        public int? GamepadFixedTrackId { get; set; }
+        public bool GamepadAssistEnabled { get; set; } = false;
+
+        // Diagnostics
+        public double CaptureFps { get; private set; }
+        public double InferenceMs { get; private set; }
+        public double FrameAge { get; private set; }
+        public int PlayerDetections { get; private set; }
+        public int EnemyDetections { get; private set; }
+        public int FriendlyDetections { get; private set; }
+        public int ActiveTracks { get; private set; }
+        public int? SelectedTrackId { get; private set; }
+        public string? SelectedClass { get; private set; }
+        public float ErrorX { get; private set; }
+        public float ErrorY { get; private set; }
+        public float TargetVelocityX { get; private set; }
+        public float TargetVelocityY { get; private set; }
+        public float RX { get; private set; }
+        public float RY { get; private set; }
+
+        public bool GamepadConnected => _gamepadOutput?.IsConnected ?? false;
+
+        private ModelManifest? _activeManifest;
+
+        public void AttachGamepadOutput(IGamepadOutput gamepadOutput)
+        {
+            _gamepadOutput = gamepadOutput;
+        }
+
         public Task<bool> InitializationTask { get; }
         public bool IsLoaded => _onnxModel != null && _outputNames != null;
         #endregion Variables
@@ -463,6 +505,17 @@ namespace Aimmy2.AILogic
             {
                 Log(LogLevel.Error, $"Error loading classes: {ex.Message}", true);
             }
+
+            try
+            {
+                string modelDirectory = Path.GetDirectoryName(_modelPath) ?? ".";
+                _activeManifest = ModelService.LoadOrCreateManifest(modelDirectory, _modelPath, _modelClasses);
+            }
+            catch (Exception ex)
+            {
+                Log(LogLevel.Warning, $"Could not load or generate model manifest: {ex.Message}");
+                _activeManifest = ModelManifest.CreateFallback("unknown", "unknown", _modelClasses);
+            }
         }
 
         #endregion Models
@@ -570,6 +623,10 @@ namespace Aimmy2.AILogic
 
                                     totalTime += stopwatch.ElapsedMilliseconds;
                                     iterationCount++;
+                                    FrameAge = stopwatch.Elapsed.TotalMilliseconds;
+                                    CaptureFps = stopwatch.Elapsed.TotalMilliseconds > 0
+                                        ? 1000.0 / stopwatch.Elapsed.TotalMilliseconds
+                                        : CaptureFps;
                                 }
                                 else
                                 {
@@ -984,12 +1041,15 @@ namespace Aimmy2.AILogic
                 }
 
                 if (_onnxModel == null) return null;
+                var inferenceStopwatch = Stopwatch.StartNew();
                 using (Benchmark("ModelInference"))
                 {
                     results = _onnxModel.Run(_reusableInputs, _outputNames, _modeloptions);
                     _lastPredictionRanInference = true;
                     outputTensor = results[0].AsTensor<float>();
                 }
+                inferenceStopwatch.Stop();
+                InferenceMs = inferenceStopwatch.Elapsed.TotalMilliseconds;
 
                 if (outputTensor == null)
                 {
@@ -1025,6 +1085,11 @@ namespace Aimmy2.AILogic
                         fovMaxX,
                         fovMinY,
                         fovMaxY);
+                }
+
+                using (Benchmark("GamepadAssistPipeline"))
+                {
+                    RunGamepadAssistPipeline(KDPredictions, detectionBox);
                 }
 
                 if (KDPredictions.Count == 0)
@@ -1105,6 +1170,72 @@ namespace Aimmy2.AILogic
                 displayBounds,
                 mousePosition,
                 mouseOnCurrentDisplay);
+        }
+
+        private void RunGamepadAssistPipeline(List<Prediction> predictions, Rectangle detectionBox)
+        {
+            if (_suppressOutputActions)
+                return;
+
+            DateTime now = DateTime.UtcNow;
+            double dtSeconds = Math.Clamp((now - _lastGamepadUpdate).TotalSeconds, 0, 1.0);
+            _lastGamepadUpdate = now;
+            _gamepadFrameCounter++;
+
+            _gamepadAssistController.Gain = (float)AimSettings.GamepadAssistStrength;
+            double smoothness = Math.Clamp(AimSettings.GamepadAssistSmoothness, 0.1, 1.0);
+            _gamepadAssistController.MaxSlewRate = (float)(1.0 / smoothness) * 4.0f;
+            GamepadAssistEnabled = AimSettings.GamepadAssist;
+
+            Dictionary<int, SemanticRole> classRoles = _activeManifest?.BuildClassRoleMap()
+                ?? _modelClasses.Keys.ToDictionary(id => id, _ => SemanticRole.Enemy);
+
+            IReadOnlyList<Track> tracks = _trackManager.Update(predictions, classRoles, now);
+
+            PlayerDetections = _trackManager.PlayerCount;
+            EnemyDetections = _trackManager.EnemyCount;
+            FriendlyDetections = _trackManager.FriendlyCount;
+            ActiveTracks = tracks.Count;
+
+            var screenCenter = new PointF(IMAGE_SIZE / 2f, IMAGE_SIZE / 2f);
+            float normalizationRadius = IMAGE_SIZE / 2f;
+
+            var selection = _targetSelector.Select(
+                tracks,
+                GamepadTargetMode,
+                GamepadRoleFilter,
+                GamepadFixedTrackId,
+                screenCenter,
+                normalizationRadius);
+
+            SelectedTrackId = selection.SelectedTrack?.TrackId;
+            SelectedClass = selection.SelectedTrack?.ClassName;
+            ErrorX = selection.ErrorX;
+            ErrorY = selection.ErrorY;
+            TargetVelocityX = selection.TargetVelocityX;
+            TargetVelocityY = selection.TargetVelocityY;
+
+            bool hasTarget = selection.SelectedTrack != null;
+            int observationAge = hasTarget ? selection.SelectedTrack!.FramesSinceLastSeen : int.MaxValue;
+            float confidence = hasTarget ? selection.SelectedTrack!.Confidence : 0f;
+
+            var (rx, ry) = _gamepadAssistController.Update(
+                hasTarget,
+                selection.ErrorX,
+                selection.ErrorY,
+                selection.TargetVelocityX,
+                selection.TargetVelocityY,
+                confidence,
+                observationAge,
+                dtSeconds);
+
+            RX = rx;
+            RY = ry;
+
+            if (GamepadAssistEnabled && _gamepadOutput != null)
+            {
+                _gamepadOutput.SetRightStick(rx, ry);
+            }
         }
 
         private void UpdateDetectionBox(Prediction target, Rectangle detectionBox)
@@ -1618,6 +1749,10 @@ namespace Aimmy2.AILogic
 
             // Dispose DXGI objects
             _captureManager.Dispose();
+
+            // Dispose gamepad output (owned externally via AttachGamepadOutput, but AIManager
+            // is the last one touching it on the AI loop thread, so it disconnects here too)
+            _gamepadOutput?.Disconnect();
 
             // Clean up other resources
             _reusableInputArray = null;

@@ -40,7 +40,9 @@ namespace Aimmy2.Class
             { "AI Confidence Font Size", 20 },
             { "Corner Radius", 0 },
             { "Border Thickness", 1 },
-            { "Opacity", 1 }
+            { "Opacity", 1 },
+            { "Gamepad Assist Strength", 1.5 },
+            { "Gamepad Assist Smoothness", 0.25 }
         };
 
         // Make sure the Settings Name is the EXACT Same as the Toggle Name or I will smack you :joeangy:
@@ -75,7 +77,8 @@ namespace Aimmy2.Class
             { "StreamGuard", false },
             //--
             { "X Axis Percentage Adjustment", false },
-            { "Y Axis Percentage Adjustment", false }
+            { "Y Axis Percentage Adjustment", false },
+            { "Gamepad Assist", false }
         };
 
         public static Dictionary<string, dynamic> minimizeState = new()
@@ -90,7 +93,8 @@ namespace Aimmy2.Class
             { "Settings Menu", false },
             { "X/Y Percentage Adjustment", false },
             { "Theme Settings", false },
-            { "Screen Settings", false}
+            { "Screen Settings", false},
+            { "Gamepad Assist", false }
         };
 
         public static Dictionary<string, dynamic> dropdownState = new()
@@ -103,7 +107,8 @@ namespace Aimmy2.Class
             { "Tracer Position", "Bottom" },
             { "Movement Path", "Cubic Bezier" },
             { "Image Size", "640" },
-            { "Target Class", "Best Confidence" }
+            { "Target Class", "Best Confidence" },
+            { "Gamepad Target Mode", "Enemy Only" }
         };
 
         public static Dictionary<string, dynamic> colorState = new()

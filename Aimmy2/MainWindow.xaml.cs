@@ -1,6 +1,7 @@
 using Aimmy2.AILogic;
 using Aimmy2.Class;
 using Aimmy2.Controls;
+using Aimmy2.Gamepad;
 using Aimmy2.MouseMovementLibraries.GHubSupport;
 using Aimmy2.Other;
 using Aimmy2.Theme;
@@ -29,6 +30,10 @@ namespace Aimmy2
         private static readonly Lazy<GithubManager> _githubManager = new(() => new GithubManager());
         private readonly Lazy<UI> _uiManager = new(() => new UI());
         private Lazy<FileManager>? _fileManager;
+
+        // Shared virtual gamepad output; attached to whichever AIManager is currently loaded so
+        // the vision/tracking pipeline only ever depends on IGamepadOutput, never on ViGEm directly.
+        public static readonly IGamepadOutput GamepadOutput = new VirtualGamepadOutput();
 
         // Windows
         private static readonly Lazy<FOV> _fovWindow = new(() =>
@@ -383,12 +388,28 @@ namespace Aimmy2
                 return;
             }
 
+            manager.AttachGamepadOutput(GamepadOutput);
+            manager.GamepadAssistEnabled = Dictionary.toggleState["Gamepad Assist"];
+            ApplyGamepadTargetModeSetting(manager);
+
             if (!PerformanceHelperState.ShouldPrompt())
             {
                 return;
             }
 
             ShowPerformanceHelper(manager, PerformanceHelperWindow.LaunchMode.CompactPrompt);
+        }
+
+        internal static void ApplyGamepadTargetModeSetting(AIManager manager)
+        {
+            manager.GamepadTargetMode = AimSettings.GamepadTargetMode switch
+            {
+                "Player Class" => TargetMode.PlayerClass,
+                "Specific Class" => TargetMode.SpecificClass,
+                "Fixed Track ID" => TargetMode.FixedTrackId,
+                "Test Target" => TargetMode.TestTarget,
+                _ => TargetMode.EnemyOnly,
+            };
         }
 
         internal void ShowPerformanceHelper()
@@ -617,6 +638,7 @@ namespace Aimmy2
 
             SaveAllConfigurations();
             FileManager.AIManager?.Dispose();
+            GamepadOutput.Dispose();
 
             // Clean up display manager
             DisplayManager.DisplayChanged -= OnDisplayChanged;
@@ -839,7 +861,14 @@ namespace Aimmy2
                     MouseManager.IsEMASmoothingEnabled = Dictionary.toggleState[title];
                 },
                 ["X Axis Percentage Adjustment"] = () => UpdateSliderVisibility(uiManager),
-                ["Y Axis Percentage Adjustment"] = () => UpdateSliderVisibility(uiManager)
+                ["Y Axis Percentage Adjustment"] = () => UpdateSliderVisibility(uiManager),
+                ["Gamepad Assist"] = () =>
+                {
+                    if (FileManager.AIManager != null)
+                    {
+                        FileManager.AIManager.GamepadAssistEnabled = Dictionary.toggleState[title];
+                    }
+                }
             };
 
             if (actions.TryGetValue(title, out var action))

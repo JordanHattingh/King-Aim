@@ -10,6 +10,7 @@ using Other;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 using UILibrary;
 
 namespace Aimmy2.Controls
@@ -31,7 +32,8 @@ namespace Aimmy2.Controls
             { "Predictions", false },
             { "Auto Trigger", false },
             { "FOV Config", false },
-            { "ESP Config", false }
+            { "ESP Config", false },
+            { "Gamepad Assist", false }
         };
 
         // Public properties for MainWindow access
@@ -41,7 +43,12 @@ namespace Aimmy2.Controls
         public StackPanel AimConfigPanel => AimConfig;
         public StackPanel PredictionsPanel => Predictions;
         public StackPanel FOVConfigPanel => FOVConfig;
+        public StackPanel GamepadAssistPanel => GamepadAssist;
         public ScrollViewer AimMenuScrollViewer => AimMenu;
+
+        private DispatcherTimer? _gamepadDiagnosticsTimer;
+        private System.Windows.Controls.Label? _gamepadStatusLabel;
+        private System.Windows.Controls.Label? _gamepadDiagnosticsLabel;
 
         public AimMenuControl()
         {
@@ -67,6 +74,7 @@ namespace Aimmy2.Controls
             LoadTriggerBot();
             LoadFOVConfig();
             LoadESPConfig();
+            LoadGamepadAssist();
 
             // Apply minimize states after loading
             ApplyMinimizeStates();
@@ -101,6 +109,7 @@ namespace Aimmy2.Controls
             ApplyPanelState("Auto Trigger", TriggerBotPanel);
             ApplyPanelState("FOV Config", FOVConfigPanel);
             ApplyPanelState("ESP Config", ESPConfigPanel);
+            ApplyPanelState("Gamepad Assist", GamepadAssistPanel);
         }
 
         private void ApplyPanelState(string stateName, StackPanel panel)
@@ -622,6 +631,88 @@ namespace Aimmy2.Controls
                 .AddSeparator();
         }
 
+        private void LoadGamepadAssist()
+        {
+            var uiManager = _mainWindow!.uiManager;
+            var builder = new SectionBuilder(this, GamepadAssist);
+
+            builder
+                .AddTitle("Gamepad Assist", true, t =>
+                {
+                    t.Minimize.Click += (s, e) => TogglePanel("Gamepad Assist", GamepadAssistPanel);
+                })
+                .AddToggle("Gamepad Assist", tooltip: "Send aim-assist input to a virtual Xbox 360 controller instead of moving the mouse. Requires ViGEmBus.")
+                .AddDropdown("Gamepad Target Mode", d =>
+                {
+                    d.DropdownBox.SelectedIndex = -1;
+                    _mainWindow.AddDropdownItem(d, "Enemy Only");
+                    _mainWindow.AddDropdownItem(d, "Player Class");
+                    _mainWindow.AddDropdownItem(d, "Specific Class");
+                    _mainWindow.AddDropdownItem(d, "Fixed Track ID");
+                    _mainWindow.AddDropdownItem(d, "Test Target");
+
+                    d.DropdownBox.SelectionChanged += (s, e) =>
+                    {
+                        if (Other.FileManager.AIManager != null)
+                        {
+                            MainWindow.ApplyGamepadTargetModeSetting(Other.FileManager.AIManager);
+                        }
+                    };
+                }, tooltip: "Which detections the gamepad assist path is allowed to select. Never selects Friendly targets.")
+                .AddSlider("Gamepad Assist Strength", "Gain", 0.1, 0.1, 0.1, 3.0, tooltip: "How strongly the right stick is pushed toward the target. Higher = snappier.")
+                .AddSlider("Gamepad Assist Smoothness", "Smoothness", 0.05, 0.05, 0.1, 1.0, tooltip: "How gradually the stick output changes. Higher = smoother but slower to respond.");
+
+            _gamepadStatusLabel = new System.Windows.Controls.Label
+            {
+                Content = "Gamepad: Disconnected",
+                Foreground = System.Windows.Media.Brushes.White,
+                FontSize = 12,
+                Margin = new Thickness(4, 0, 0, 0),
+            };
+            GamepadAssist.Children.Add(_gamepadStatusLabel);
+
+            _gamepadDiagnosticsLabel = new System.Windows.Controls.Label
+            {
+                Content = "",
+                Foreground = System.Windows.Media.Brushes.LightGray,
+                FontSize = 11,
+                Margin = new Thickness(4, 0, 0, 0),
+            };
+            GamepadAssist.Children.Add(_gamepadDiagnosticsLabel);
+
+            builder.AddSeparator();
+
+            _gamepadDiagnosticsTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(250),
+            };
+            _gamepadDiagnosticsTimer.Tick += (s, e) => UpdateGamepadDiagnostics();
+            _gamepadDiagnosticsTimer.Start();
+        }
+
+        private void UpdateGamepadDiagnostics()
+        {
+            if (_gamepadStatusLabel == null || _gamepadDiagnosticsLabel == null)
+                return;
+
+            bool connected = MainWindow.GamepadOutput.IsConnected;
+            _gamepadStatusLabel.Content = connected ? "Gamepad: Connected" : "Gamepad: Disconnected";
+            _gamepadStatusLabel.Foreground = connected ? System.Windows.Media.Brushes.LightGreen : System.Windows.Media.Brushes.OrangeRed;
+
+            var manager = Other.FileManager.AIManager;
+            if (manager == null)
+            {
+                _gamepadDiagnosticsLabel.Content = "No model loaded.";
+                return;
+            }
+
+            _gamepadDiagnosticsLabel.Content =
+                $"Capture FPS: {manager.CaptureFps:F1}  Inference: {manager.InferenceMs:F1}ms  Frame Age: {manager.FrameAge:F1}ms\n" +
+                $"Players: {manager.PlayerDetections}  Enemies: {manager.EnemyDetections}  Friendlies: {manager.FriendlyDetections}  Tracks: {manager.ActiveTracks}\n" +
+                $"Selected: #{(manager.SelectedTrackId?.ToString() ?? "-")} ({manager.SelectedClass ?? "-"})  ErrX: {manager.ErrorX:F2}  ErrY: {manager.ErrorY:F2}\n" +
+                $"TargetVel: ({manager.TargetVelocityX:F1}, {manager.TargetVelocityY:F1})  RX: {manager.RX:F2}  RY: {manager.RY:F2}";
+        }
+
         #endregion
 
         #region Helper Methods
@@ -669,6 +760,8 @@ namespace Aimmy2.Controls
         {
             // Save minimize states before disposing
             SaveMinimizeStatesToGlobal();
+            _gamepadDiagnosticsTimer?.Stop();
+            _gamepadDiagnosticsTimer = null;
         }
 
         #endregion

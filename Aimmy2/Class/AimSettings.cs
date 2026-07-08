@@ -23,6 +23,7 @@ namespace Aimmy2.Class
         public static string TracerPosition => GetDropdown("Tracer Position");
         public static string MovementPath => GetDropdown("Movement Path");
         public static string MouseMovementMethod => GetDropdown("Mouse Movement Method");
+        public static string GamepadTargetMode => GetDropdown("Gamepad Target Mode");
 
         public static double FovSize => GetSlider("FOV Size");
         public static float MinimumConfidence => (float)(GetSlider("AI Minimum Confidence") / 100.0);
@@ -39,6 +40,8 @@ namespace Aimmy2.Class
         public static double WiseTheFoxLeadTime => GetSlider("WiseTheFox Lead Time");
         public static double ShalloeLeadMultiplier => GetSlider("Shalloe Lead Multiplier");
         public static int AiFpsLimit => Math.Max(0, (int)Math.Round(GetSlider("AI FPS Limit")));
+        public static double GamepadAssistStrength => GetSlider("Gamepad Assist Strength");
+        public static double GamepadAssistSmoothness => GetSlider("Gamepad Assist Smoothness");
 
         public static bool AutoTrigger => GetToggle("Auto Trigger");
         public static bool ConstantAiTracking => GetToggle("Constant AI Tracking");
@@ -56,6 +59,7 @@ namespace Aimmy2.Class
         public static bool CollectDataWhilePlaying => GetToggle("Collect Data While Playing");
         public static bool AutoLabelData => GetToggle("Auto Label Data");
         public static bool ThirdPersonSupport => GetToggle("Third Person Support");
+        public static bool GamepadAssist => GetToggle("Gamepad Assist");
 
         public static double GetSlider(string key) =>
             Convert.ToDouble(Dictionary.sliderSettings[key], CultureInfo.InvariantCulture);

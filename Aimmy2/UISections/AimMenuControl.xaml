@@ -25,6 +25,7 @@
                         Margin="5,0,10,0">
                 <StackPanel x:Name="AimConfig" />
                 <StackPanel x:Name="FOVConfig" />
+                <StackPanel x:Name="GamepadAssist" />
             </StackPanel>
         </Grid>
     </ScrollViewer>
