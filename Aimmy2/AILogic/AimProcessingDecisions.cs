@@ -6,19 +6,23 @@ namespace Aimmy2.AILogic
             bool showDetectedPlayer,
             bool constantAiTracking,
             bool aimKeyHeld,
-            bool secondAimKeyHeld) =>
+            bool secondAimKeyHeld,
+            bool gamepadAssistEnabled) =>
             showDetectedPlayer ||
             constantAiTracking ||
             aimKeyHeld ||
-            secondAimKeyHeld;
+            secondAimKeyHeld ||
+            gamepadAssistEnabled;
 
         internal static bool ShouldProcessFrame(
             bool aimAssist,
             bool showDetectedPlayer,
-            bool autoTrigger) =>
+            bool autoTrigger,
+            bool gamepadAssistEnabled) =>
             aimAssist ||
             showDetectedPlayer ||
-            autoTrigger;
+            autoTrigger ||
+            gamepadAssistEnabled;
 
         internal static bool ShouldAttemptAutoTrigger(
             bool autoTrigger,

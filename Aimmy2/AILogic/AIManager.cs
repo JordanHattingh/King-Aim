@@ -528,14 +528,16 @@ namespace Aimmy2.AILogic
                 AimSettings.ShowDetectedPlayer,
                 AimSettings.ConstantAiTracking,
                 InputBindingManager.IsHoldingBinding("Aim Keybind"),
-                InputBindingManager.IsHoldingBinding("Second Aim Keybind"));
+                InputBindingManager.IsHoldingBinding("Second Aim Keybind"),
+                AimSettings.GamepadAssist);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static bool ShouldProcess() =>
             AimProcessingDecisions.ShouldProcessFrame(
                 AimSettings.AimAssist,
                 AimSettings.ShowDetectedPlayer,
-                AimSettings.AutoTrigger);
+                AimSettings.AutoTrigger,
+                AimSettings.GamepadAssist);
 
         private async Task AiLoopAsync(CancellationToken cancellationToken)
         {
