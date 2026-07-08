@@ -5,6 +5,10 @@ VisualStudioVersion = 17.8.34330.188
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Aimmy2", "Aimmy2\Aimmy2.csproj", "{D9FA7799-5559-4002-BC6F-5AE12BB5DD97}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Aimmy2.Tests", "Aimmy2.Tests\Aimmy2.Tests.csproj", "{A1B2C3D4-1111-4002-BC6F-5AE12BB5DD97}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Aimmy2.TestArena", "Aimmy2.TestArena\Aimmy2.TestArena.csproj", "{A1B2C3D4-2222-4002-BC6F-5AE12BB5DD97}"
+EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{205C992C-B78C-4208-B7DD-ADC3FA475DC2}"
 	ProjectSection(SolutionItems) = preProject
 		.editorconfig = .editorconfig
@@ -26,6 +30,22 @@ Global
 		{D9FA7799-5559-4002-BC6F-5AE12BB5DD97}.Release|Any CPU.Build.0 = Release|Any CPU
 		{D9FA7799-5559-4002-BC6F-5AE12BB5DD97}.Release|x64.ActiveCfg = Release|x64
 		{D9FA7799-5559-4002-BC6F-5AE12BB5DD97}.Release|x64.Build.0 = Release|x64
+		{A1B2C3D4-1111-4002-BC6F-5AE12BB5DD97}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-1111-4002-BC6F-5AE12BB5DD97}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-1111-4002-BC6F-5AE12BB5DD97}.Debug|x64.ActiveCfg = Debug|x64
+		{A1B2C3D4-1111-4002-BC6F-5AE12BB5DD97}.Debug|x64.Build.0 = Debug|x64
+		{A1B2C3D4-1111-4002-BC6F-5AE12BB5DD97}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-1111-4002-BC6F-5AE12BB5DD97}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1B2C3D4-1111-4002-BC6F-5AE12BB5DD97}.Release|x64.ActiveCfg = Release|x64
+		{A1B2C3D4-1111-4002-BC6F-5AE12BB5DD97}.Release|x64.Build.0 = Release|x64
+		{A1B2C3D4-2222-4002-BC6F-5AE12BB5DD97}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-2222-4002-BC6F-5AE12BB5DD97}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-2222-4002-BC6F-5AE12BB5DD97}.Debug|x64.ActiveCfg = Debug|x64
+		{A1B2C3D4-2222-4002-BC6F-5AE12BB5DD97}.Debug|x64.Build.0 = Debug|x64
+		{A1B2C3D4-2222-4002-BC6F-5AE12BB5DD97}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-2222-4002-BC6F-5AE12BB5DD97}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1B2C3D4-2222-4002-BC6F-5AE12BB5DD97}.Release|x64.ActiveCfg = Release|x64
+		{A1B2C3D4-2222-4002-BC6F-5AE12BB5DD97}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
