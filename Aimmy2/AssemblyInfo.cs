@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Windows;
 
 [assembly: InternalsVisibleTo("Aimmy2.Tests")]
+[assembly: InternalsVisibleTo("Aimmy2.TestArena")]
 
 [assembly: ThemeInfo(
     ResourceDictionaryLocation.None,            //where theme specific resource dictionaries are located
