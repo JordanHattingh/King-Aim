@@ -126,6 +126,7 @@ namespace Aimmy2.AILogic
         private readonly TrackManager _trackManager = new();
         private readonly TargetSelector _targetSelector = new();
         private readonly GamepadAssistController _gamepadAssistController = new();
+        private readonly XInputReader _physicalGamepadReader = new();
         private IGamepadOutput? _gamepadOutput;
         private long _gamepadFrameCounter;
         private DateTime _lastGamepadUpdate = DateTime.UtcNow;
@@ -133,6 +134,7 @@ namespace Aimmy2.AILogic
         public TargetMode GamepadTargetMode { get; set; } = TargetMode.EnemyOnly;
         public SemanticRole GamepadRoleFilter { get; set; } = SemanticRole.Enemy;
         public int? GamepadFixedTrackId { get; set; }
+        public uint PhysicalGamepadIndex { get; set; } = 0;
         public bool GamepadAssistEnabled { get; set; } = false;
 
         // Diagnostics
@@ -1221,7 +1223,7 @@ namespace Aimmy2.AILogic
             int observationAge = hasTarget ? selection.SelectedTrack!.FramesSinceLastSeen : int.MaxValue;
             float confidence = hasTarget ? selection.SelectedTrack!.Confidence : 0f;
 
-            var (rx, ry) = _gamepadAssistController.Update(
+            var (assistRx, assistRy) = _gamepadAssistController.Update(
                 hasTarget,
                 selection.ErrorX,
                 selection.ErrorY,
@@ -1231,11 +1233,23 @@ namespace Aimmy2.AILogic
                 observationAge,
                 dtSeconds);
 
+            PhysicalGamepadState physicalState = _physicalGamepadReader.Read(PhysicalGamepadIndex);
+
+            var (rx, ry) = StickBlender.Blend(
+                physicalState.Connected ? physicalState.RightStickX : 0f,
+                physicalState.Connected ? physicalState.RightStickY : 0f,
+                assistRx,
+                assistRy);
+
             RX = rx;
             RY = ry;
 
             if (GamepadAssistEnabled && _gamepadOutput != null)
             {
+                // Passthrough must run every frame the virtual pad is active, regardless of whether
+                // a target is locked, or the player loses movement/shoot/buttons the instant the
+                // AI has nothing to aim at.
+                _gamepadOutput.SetPassthroughState(physicalState);
                 _gamepadOutput.SetRightStick(rx, ry);
             }
         }

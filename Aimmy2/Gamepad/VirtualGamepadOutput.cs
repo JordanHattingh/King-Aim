@@ -58,7 +58,6 @@ namespace Aimmy2.Gamepad
                 _controller.SetAxisValue(Xbox360Axis.RightThumbX, x);
                 _controller.SetAxisValue(Xbox360Axis.RightThumbY, y);
                 _controller.SubmitReport();
-
             }
             catch
             {
@@ -66,6 +65,29 @@ namespace Aimmy2.Gamepad
                 IsConnected = false;
             }
         }
+
+        public void SetPassthroughState(PhysicalGamepadState physicalState)
+        {
+            if (!IsConnected || _controller == null || !physicalState.Connected)
+                return;
+
+            try
+            {
+                _controller.SetAxisValue(Xbox360Axis.LeftThumbX, MapAxis(physicalState.LeftStickX));
+                _controller.SetAxisValue(Xbox360Axis.LeftThumbY, MapAxis(physicalState.LeftStickY));
+                _controller.SetSliderValue(Xbox360Slider.LeftTrigger, MapTrigger(physicalState.LeftTrigger));
+                _controller.SetSliderValue(Xbox360Slider.RightTrigger, MapTrigger(physicalState.RightTrigger));
+                _controller.SetButtonsFull(physicalState.Buttons);
+                _controller.SubmitReport();
+            }
+            catch
+            {
+                IsConnected = false;
+            }
+        }
+
+        private static byte MapTrigger(float value) =>
+            (byte)Math.Round(Math.Clamp(value, 0f, 1f) * byte.MaxValue);
 
         private static short MapAxis(float value)
         {
