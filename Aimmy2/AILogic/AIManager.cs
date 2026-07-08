@@ -1076,6 +1076,15 @@ namespace Aimmy2.AILogic
                     float minConfidence = AimSettings.MinimumConfidence;
                     string selectedClass = AimSettings.TargetClass;
 
+                    var cursorScreenPos = WinAPICaller.GetCursorPosition();
+                    PointF? cursorLocalPosition = null;
+                    if (DisplayManager.IsPointInCurrentDisplay(new System.Windows.Point(cursorScreenPos.X, cursorScreenPos.Y)))
+                    {
+                        cursorLocalPosition = new PointF(
+                            cursorScreenPos.X - detectionBox.Left,
+                            cursorScreenPos.Y - detectionBox.Top);
+                    }
+
                     KDPredictions = PredictionFilter.CreatePredictions(
                         outputTensor,
                         detectionBox,
@@ -1089,7 +1098,9 @@ namespace Aimmy2.AILogic
                         fovMaxX,
                         fovMinY,
                         fovMaxY,
-                        (float)AimSettings.ViewmodelExclusion);
+                        (float)AimSettings.ViewmodelExclusion,
+                        cursorLocalPosition,
+                        (float)AimSettings.CursorExclusionRadius);
                 }
 
                 using (Benchmark("GamepadAssistPipeline"))

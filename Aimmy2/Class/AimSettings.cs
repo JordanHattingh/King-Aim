@@ -43,6 +43,7 @@ namespace Aimmy2.Class
         public static double GamepadAssistStrength => GetSlider("Gamepad Assist Strength");
         public static double GamepadAssistSmoothness => GetSlider("Gamepad Assist Smoothness");
         public static double ViewmodelExclusion => GetSlider("Viewmodel Exclusion Zone") / 100.0;
+        public static double CursorExclusionRadius => GetSlider("Cursor Exclusion Radius");
 
         public static bool AutoTrigger => GetToggle("Auto Trigger");
         public static bool ConstantAiTracking => GetToggle("Constant AI Tracking");

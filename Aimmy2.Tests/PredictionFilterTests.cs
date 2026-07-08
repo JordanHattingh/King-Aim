@@ -90,5 +90,63 @@ namespace Aimmy2.Tests
 
             Assert.Single(predictions);
         }
+
+        [Fact]
+        public void CursorExclusion_DropsDetectionNearCursor()
+        {
+            var tensor = MakeSingleDetectionTensor(xCenter: 320, yCenter: 320, width: 20, height: 20, confidence: 0.9f);
+
+            var predictions = PredictionFilter.CreatePredictions(
+                tensor, DetectionBox, ImageSize, numDetections: 1, numClasses: NumClasses,
+                modelClasses: ModelClasses, minConfidence: 0.5f, selectedClass: "Best Confidence",
+                fovMinX: 0, fovMaxX: ImageSize, fovMinY: 0, fovMaxY: ImageSize,
+                cursorLocalPosition: new PointF(325, 322), cursorExclusionRadius: 30f);
+
+            Assert.Empty(predictions);
+        }
+
+        [Fact]
+        public void CursorExclusion_KeepsDetectionOutsideRadius()
+        {
+            var tensor = MakeSingleDetectionTensor(xCenter: 320, yCenter: 320, width: 20, height: 20, confidence: 0.9f);
+
+            var predictions = PredictionFilter.CreatePredictions(
+                tensor, DetectionBox, ImageSize, numDetections: 1, numClasses: NumClasses,
+                modelClasses: ModelClasses, minConfidence: 0.5f, selectedClass: "Best Confidence",
+                fovMinX: 0, fovMaxX: ImageSize, fovMinY: 0, fovMaxY: ImageSize,
+                cursorLocalPosition: new PointF(500, 500), cursorExclusionRadius: 30f);
+
+            Assert.Single(predictions);
+        }
+
+        [Fact]
+        public void CursorExclusion_NullPosition_DoesNotFilterAnything()
+        {
+            // No cursor position known (e.g. cursor is on a different monitor) — must never
+            // filter based on a stale/default (0,0) position.
+            var tensor = MakeSingleDetectionTensor(xCenter: 5, yCenter: 5, width: 10, height: 10, confidence: 0.9f);
+
+            var predictions = PredictionFilter.CreatePredictions(
+                tensor, DetectionBox, ImageSize, numDetections: 1, numClasses: NumClasses,
+                modelClasses: ModelClasses, minConfidence: 0.5f, selectedClass: "Best Confidence",
+                fovMinX: 0, fovMaxX: ImageSize, fovMinY: 0, fovMaxY: ImageSize,
+                cursorLocalPosition: null, cursorExclusionRadius: 30f);
+
+            Assert.Single(predictions);
+        }
+
+        [Fact]
+        public void CursorExclusion_ZeroRadius_DoesNotFilterAnything()
+        {
+            var tensor = MakeSingleDetectionTensor(xCenter: 320, yCenter: 320, width: 20, height: 20, confidence: 0.9f);
+
+            var predictions = PredictionFilter.CreatePredictions(
+                tensor, DetectionBox, ImageSize, numDetections: 1, numClasses: NumClasses,
+                modelClasses: ModelClasses, minConfidence: 0.5f, selectedClass: "Best Confidence",
+                fovMinX: 0, fovMaxX: ImageSize, fovMinY: 0, fovMaxY: ImageSize,
+                cursorLocalPosition: new PointF(320, 320), cursorExclusionRadius: 0f);
+
+            Assert.Single(predictions);
+        }
     }
 }

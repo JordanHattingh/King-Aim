@@ -18,7 +18,9 @@ namespace Aimmy2.AILogic
             float fovMaxX,
             float fovMinY,
             float fovMaxY,
-            float viewmodelExclusionFraction = 0f)
+            float viewmodelExclusionFraction = 0f,
+            PointF? cursorLocalPosition = null,
+            float cursorExclusionRadius = 0f)
         {
             // First-person viewmodels (own gun/hands) almost always render in the bottom-center
             // of the screen and can be misclassified as an enemy by detectors not trained with
@@ -27,6 +29,12 @@ namespace Aimmy2.AILogic
             // This is a heuristic, not a fix for the model itself: at high values it can also
             // discard a legitimate enemy standing very close/low in frame.
             float viewmodelExclusionY = imageSize * (1f - Math.Clamp(viewmodelExclusionFraction, 0f, 1f));
+
+            // The OS mouse cursor icon rendered on top of the game can itself be misclassified as
+            // a target. cursorLocalPosition (in the same 0..imageSize local space as detections)
+            // plus cursorExclusionRadius discards any detection centered within that radius of it.
+            float cursorExclusionRadiusSq = cursorExclusionRadius * cursorExclusionRadius;
+
             int selectedClassId = ResolveSelectedClassId(modelClasses, selectedClass);
 
             var predictions = new List<Prediction>(numDetections);
@@ -77,6 +85,14 @@ namespace Aimmy2.AILogic
 
                 // Discard detections whose center falls inside the bottom viewmodel-exclusion band.
                 if (viewmodelExclusionFraction > 0f && yCenter >= viewmodelExclusionY) continue;
+
+                // Discard detections centered near the OS mouse cursor.
+                if (cursorLocalPosition.HasValue && cursorExclusionRadius > 0f)
+                {
+                    float dx = xCenter - cursorLocalPosition.Value.X;
+                    float dy = yCenter - cursorLocalPosition.Value.Y;
+                    if (dx * dx + dy * dy <= cursorExclusionRadiusSq) continue;
+                }
 
                 predictions.Add(new Prediction
                 {
