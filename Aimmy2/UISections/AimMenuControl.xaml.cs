@@ -660,7 +660,8 @@ namespace Aimmy2.Controls
                     };
                 }, tooltip: "Which detections the gamepad assist path is allowed to select. Never selects Friendly targets.")
                 .AddSlider("Gamepad Assist Strength", "Gain", 0.1, 0.1, 0.1, 3.0, tooltip: "How strongly the right stick is pushed toward the target. Higher = snappier.")
-                .AddSlider("Gamepad Assist Smoothness", "Smoothness", 0.05, 0.05, 0.1, 1.0, tooltip: "How gradually the stick output changes. Higher = smoother but slower to respond.");
+                .AddSlider("Gamepad Assist Smoothness", "Smoothness", 0.05, 0.05, 0.1, 1.0, tooltip: "How gradually the stick output changes. Higher = smoother but slower to respond.")
+                .AddSlider("Viewmodel Exclusion Zone", "%", 5, 5, 0, 60, tooltip: "Ignores detections in the bottom % of the capture area, where your own gun/hands usually render. Raise this if the assist keeps pulling toward your own viewmodel; lower it if it's ignoring real close-range enemies.");
 
             _gamepadStatusLabel = new System.Windows.Controls.Label
             {

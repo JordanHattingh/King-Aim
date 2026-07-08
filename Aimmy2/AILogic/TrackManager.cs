@@ -31,6 +31,14 @@ namespace Aimmy2.AILogic
 
         public int MaxFramesLost { get; set; } = 5;
 
+        /// <summary>
+        /// Wall-clock time a track may go unmatched before being dropped. This is the actual
+        /// expiry rule (not MaxFramesLost) so tracking survives short detection gaps consistently
+        /// regardless of the AI loop's real FPS — a frame-count-only rule loses tracks almost
+        /// instantly when FPS is low (e.g. 5 missed frames at 5 FPS is a full second gone).
+        /// </summary>
+        public double MaxLostSeconds { get; set; } = 1.0;
+
         public IReadOnlyList<Track> ActiveTracks => _tracks;
 
         public int PlayerCount => _tracks.Count(t => t.Role == SemanticRole.Player);
@@ -48,7 +56,7 @@ namespace Aimmy2.AILogic
             foreach (var track in _tracks)
             {
                 double dt = Math.Max(0, (frameTime - track.LastSeen).TotalSeconds);
-                if (dt > 0 && dt < 1.0)
+                if (dt > 0 && dt < MaxLostSeconds)
                 {
                     track.BoundingBox = new RectangleF(
                         track.BoundingBox.X + track.Velocity.X,
@@ -124,7 +132,7 @@ namespace Aimmy2.AILogic
                 _tracks.Add(newTrack);
             }
 
-            _tracks.RemoveAll(t => t.FramesSinceLastSeen > MaxFramesLost);
+            _tracks.RemoveAll(t => (frameTime - t.LastSeen).TotalSeconds > MaxLostSeconds);
 
             return _tracks.ToList();
         }

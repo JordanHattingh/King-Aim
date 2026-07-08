@@ -17,8 +17,16 @@ namespace Aimmy2.AILogic
             float fovMinX,
             float fovMaxX,
             float fovMinY,
-            float fovMaxY)
+            float fovMaxY,
+            float viewmodelExclusionFraction = 0f)
         {
+            // First-person viewmodels (own gun/hands) almost always render in the bottom-center
+            // of the screen and can be misclassified as an enemy by detectors not trained with
+            // viewmodel negatives. viewmodelExclusionFraction (0..1) is the portion of the capture
+            // box's height, measured up from the bottom, where detections are discarded entirely.
+            // This is a heuristic, not a fix for the model itself: at high values it can also
+            // discard a legitimate enemy standing very close/low in frame.
+            float viewmodelExclusionY = imageSize * (1f - Math.Clamp(viewmodelExclusionFraction, 0f, 1f));
             int selectedClassId = ResolveSelectedClassId(modelClasses, selectedClass);
 
             var predictions = new List<Prediction>(numDetections);
@@ -66,6 +74,9 @@ namespace Aimmy2.AILogic
                 float yMax = yCenter + height / 2;
 
                 if (xMin < fovMinX || xMax > fovMaxX || yMin < fovMinY || yMax > fovMaxY) continue;
+
+                // Discard detections whose center falls inside the bottom viewmodel-exclusion band.
+                if (viewmodelExclusionFraction > 0f && yCenter >= viewmodelExclusionY) continue;
 
                 predictions.Add(new Prediction
                 {

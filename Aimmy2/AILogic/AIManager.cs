@@ -1088,7 +1088,8 @@ namespace Aimmy2.AILogic
                         fovMinX,
                         fovMaxX,
                         fovMinY,
-                        fovMaxY);
+                        fovMaxY,
+                        (float)AimSettings.ViewmodelExclusion);
                 }
 
                 using (Benchmark("GamepadAssistPipeline"))

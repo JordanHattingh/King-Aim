@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Aimmy2.AILogic;
+using Aimmy2.Class;
 using Aimmy2.Gamepad;
 using Path = System.IO.Path;
 using Rectangle = System.Windows.Shapes.Rectangle;
@@ -21,6 +22,11 @@ namespace Aimmy2.TestArena
 
         public MainWindow()
         {
+            // AIManager's capture path (DXGI Desktop Duplication) requires DisplayManager to know
+            // the current display before it initializes; the main Aimmy2 app does this in its own
+            // startup sequence, but Test Arena runs standalone and must do it too.
+            DisplayManager.Initialize();
+
             InitializeComponent();
 
             foreach (ScenarioKind kind in Enum.GetValues<ScenarioKind>())
@@ -49,6 +55,31 @@ namespace Aimmy2.TestArena
             {
                 RebuildScenario(kind);
             }
+        }
+
+        private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            if (IsLoaded && ScenarioComboBox.SelectedItem is ScenarioKind kind)
+            {
+                RebuildScenario(kind);
+            }
+        }
+
+        private void Window_SourceInitialized(object? sender, EventArgs e)
+        {
+            // Clamp to the usable work area (screen minus taskbar) so the window can never be
+            // taller/wider than the display, which otherwise pushes the top toolbar off-screen
+            // on smaller displays (e.g. 1280x720) since CenterScreen centers the requested size,
+            // not a size clamped to what actually fits.
+            var workArea = SystemParameters.WorkArea;
+            MaxWidth = workArea.Width;
+            MaxHeight = workArea.Height;
+
+            if (Width > workArea.Width) Width = workArea.Width;
+            if (Height > workArea.Height) Height = workArea.Height;
+
+            Left = Math.Max(0, workArea.Left + (workArea.Width - Width) / 2);
+            Top = Math.Max(0, workArea.Top + (workArea.Height - Height) / 2);
         }
 
         private void RebuildScenario(ScenarioKind kind)

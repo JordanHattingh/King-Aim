@@ -4,8 +4,12 @@
         Title="Aimmy Test Arena"
         Width="1280"
         Height="800"
+        MinWidth="640"
+        MinHeight="480"
         Background="#FF1E1E1E"
-        WindowStartupLocation="CenterScreen">
+        WindowStartupLocation="CenterScreen"
+        SizeChanged="Window_SizeChanged"
+        SourceInitialized="Window_SourceInitialized">
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -23,7 +27,24 @@
             <ComboBox x:Name="ScenarioComboBox"
                       Width="260"
                       Margin="0,6"
-                      SelectionChanged="ScenarioComboBox_SelectionChanged" />
+                      Background="#FF3F3F46"
+                      Foreground="Black"
+                      BorderBrush="#FF5A5A5F"
+                      SelectionChanged="ScenarioComboBox_SelectionChanged">
+                <ComboBox.Resources>
+                    <Style TargetType="ComboBoxItem">
+                        <Setter Property="Background" Value="#FF3F3F46" />
+                        <Setter Property="Foreground" Value="White" />
+                        <Setter Property="Padding" Value="6,4" />
+                        <Style.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter Property="Background" Value="#FF007ACC" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </ComboBox.Resources>
+            </ComboBox>
 
             <CheckBox x:Name="ModelPipelineCheckBox"
                       Content="Run full pipeline (capture -> inference -> tracking -> gamepad)"

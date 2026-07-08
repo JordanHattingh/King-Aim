@@ -42,25 +42,47 @@ namespace Aimmy2.Tests
         [Fact]
         public void TrackId_SurvivesShortDetectionGap()
         {
-            var manager = new TrackManager { MaxFramesLost = 5 };
+            var manager = new TrackManager { MaxLostSeconds = 1.0 };
             var now = DateTime.UtcNow;
 
             var tracks = manager.Update(new List<Prediction> { MakePrediction(0, "enemy", 100, 100) }, ClassRoles, now);
             int trackId = tracks[0].TrackId;
 
-            // Simulate up to MaxFramesLost frames with no detections at all.
-            for (int i = 1; i <= 5; i++)
+            // Simulate a gap just under MaxLostSeconds at a normal ~60fps cadence.
+            for (int i = 1; i <= 50; i++)
             {
-                now = now.AddMilliseconds(16 * i);
+                now = now.AddMilliseconds(16);
                 tracks = manager.Update(new List<Prediction>(), ClassRoles, now);
             }
 
             Assert.Contains(tracks, t => t.TrackId == trackId);
 
-            // One more missed frame beyond MaxFramesLost should drop it.
-            now = now.AddMilliseconds(16);
+            // Push past MaxLostSeconds — should now be dropped.
+            now = now.AddMilliseconds(300);
             tracks = manager.Update(new List<Prediction>(), ClassRoles, now);
             Assert.DoesNotContain(tracks, t => t.TrackId == trackId);
+        }
+
+        [Fact]
+        public void TrackId_SurvivesShortDetectionGap_EvenAtLowFramerate()
+        {
+            // At low FPS, a fixed missed-frame-count rule would previously drop the track almost
+            // instantly (e.g. 5 missed frames at 5fps = 1 second gone). Time-based expiry must
+            // keep the track alive for MaxLostSeconds regardless of how few frames that spans.
+            var manager = new TrackManager { MaxLostSeconds = 1.0 };
+            var now = DateTime.UtcNow;
+
+            var tracks = manager.Update(new List<Prediction> { MakePrediction(0, "enemy", 100, 100) }, ClassRoles, now);
+            int trackId = tracks[0].TrackId;
+
+            // Simulate ~5fps: only 3 missed frames, but 600ms of wall-clock time — under MaxLostSeconds.
+            for (int i = 1; i <= 3; i++)
+            {
+                now = now.AddMilliseconds(200);
+                tracks = manager.Update(new List<Prediction>(), ClassRoles, now);
+            }
+
+            Assert.Contains(tracks, t => t.TrackId == trackId);
         }
 
         [Fact]

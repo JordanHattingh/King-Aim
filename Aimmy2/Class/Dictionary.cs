@@ -42,7 +42,8 @@ namespace Aimmy2.Class
             { "Border Thickness", 1 },
             { "Opacity", 1 },
             { "Gamepad Assist Strength", 1.5 },
-            { "Gamepad Assist Smoothness", 0.25 }
+            { "Gamepad Assist Smoothness", 0.25 },
+            { "Viewmodel Exclusion Zone", 20 }
         };
 
         // Make sure the Settings Name is the EXACT Same as the Toggle Name or I will smack you :joeangy:

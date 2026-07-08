@@ -42,6 +42,7 @@ namespace Aimmy2.Class
         public static int AiFpsLimit => Math.Max(0, (int)Math.Round(GetSlider("AI FPS Limit")));
         public static double GamepadAssistStrength => GetSlider("Gamepad Assist Strength");
         public static double GamepadAssistSmoothness => GetSlider("Gamepad Assist Smoothness");
+        public static double ViewmodelExclusion => GetSlider("Viewmodel Exclusion Zone") / 100.0;
 
         public static bool AutoTrigger => GetToggle("Auto Trigger");
         public static bool ConstantAiTracking => GetToggle("Constant AI Tracking");
