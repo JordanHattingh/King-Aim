@@ -71,6 +71,7 @@
     <PackageReference Include="MaterialDesignThemes" Version="5.3.0" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.23.0" />
     <PackageReference Include="MouseKeyHook" Version="5.7.1" />
+    <PackageReference Include="Nefarius.ViGEm.Client" Version="1.21.256" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <PackageReference Include="Supercluster.KDTree" Version="1.0.4" />
     <PackageReference Include="System.Management" Version="10.0.2" />

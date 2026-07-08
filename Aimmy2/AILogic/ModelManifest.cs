@@ -1,0 +1,146 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace Aimmy2.AILogic
+{
+    public enum SemanticRole
+    {
+        Enemy,
+        Player,
+        Friendly,
+        Ignore
+    }
+
+    public class ModelClassEntry
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+        public SemanticRole SemanticRole { get; set; }
+    }
+
+    public class ModelManifest
+    {
+        public string SchemaVersion { get; set; } = "1";
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string Version { get; set; } = "";
+        public int InputWidth { get; set; }
+        public int InputHeight { get; set; }
+        public List<ModelClassEntry> Classes { get; set; } = new();
+        public float DefaultConfidence { get; set; } = 0.5f;
+
+        private static readonly JsonSerializerOptions SerializerOptions = new()
+        {
+            PropertyNameCaseInsensitive = true,
+            Converters = { new JsonStringEnumConverter() },
+        };
+
+        public static string ManifestFileName => "manifest.json";
+
+        public static string GetManifestPath(string modelDirectory) =>
+            Path.Combine(modelDirectory, ManifestFileName);
+
+        public static ModelManifest Load(string manifestPath)
+        {
+            string json = File.ReadAllText(manifestPath);
+            var manifest = JsonSerializer.Deserialize<ModelManifest>(json, ManifestOptionsWithSnakeCase());
+            return manifest ?? throw new InvalidDataException($"Manifest at '{manifestPath}' could not be parsed.");
+        }
+
+        public static bool TryLoad(string manifestPath, out ModelManifest? manifest)
+        {
+            try
+            {
+                if (!File.Exists(manifestPath))
+                {
+                    manifest = null;
+                    return false;
+                }
+
+                manifest = Load(manifestPath);
+                return true;
+            }
+            catch
+            {
+                manifest = null;
+                return false;
+            }
+        }
+
+        public void Save(string manifestPath)
+        {
+            string json = JsonSerializer.Serialize(this, ManifestOptionsWithSnakeCase(true));
+            File.WriteAllText(manifestPath, json);
+        }
+
+        public static ModelManifest CreateFallback(string modelId, string modelName, IReadOnlyDictionary<int, string> modelClasses, int inputSize = 640)
+        {
+            var manifest = new ModelManifest
+            {
+                SchemaVersion = "1",
+                Id = modelId,
+                Name = modelName,
+                Version = "1.0.0",
+                InputWidth = inputSize,
+                InputHeight = inputSize,
+                DefaultConfidence = 0.5f,
+            };
+
+            foreach (var (id, name) in modelClasses)
+            {
+                manifest.Classes.Add(new ModelClassEntry
+                {
+                    Id = id,
+                    Name = name,
+                    SemanticRole = SemanticRole.Enemy,
+                });
+            }
+
+            return manifest;
+        }
+
+        public Dictionary<int, SemanticRole> BuildClassRoleMap() =>
+            Classes.ToDictionary(c => c.Id, c => c.SemanticRole);
+
+        public Dictionary<int, string> BuildClassNameMap() =>
+            Classes.ToDictionary(c => c.Id, c => c.Name);
+
+        private static JsonSerializerOptions ManifestOptionsWithSnakeCase(bool writeIndented = false)
+        {
+            var options = new JsonSerializerOptions(SerializerOptions)
+            {
+                WriteIndented = writeIndented,
+                PropertyNamingPolicy = SnakeCaseNamingPolicy.Instance,
+            };
+            return options;
+        }
+
+        private sealed class SnakeCaseNamingPolicy : JsonNamingPolicy
+        {
+            public static readonly SnakeCaseNamingPolicy Instance = new();
+
+            public override string ConvertName(string name)
+            {
+                if (string.IsNullOrEmpty(name))
+                    return name;
+
+                var sb = new System.Text.StringBuilder(name.Length + 4);
+                for (int i = 0; i < name.Length; i++)
+                {
+                    char c = name[i];
+                    if (char.IsUpper(c))
+                    {
+                        if (i > 0)
+                            sb.Append('_');
+                        sb.Append(char.ToLowerInvariant(c));
+                    }
+                    else
+                    {
+                        sb.Append(c);
+                    }
+                }
+                return sb.ToString();
+            }
+        }
+    }
+}

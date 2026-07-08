@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "id": "enemy-detection-v1",
+  "name": "Enemy Detection V1",
+  "version": "1.0.0",
+  "input_width": 640,
+  "input_height": 640,
+  "default_confidence": 0.5,
+  "classes": [
+    { "id": 0, "name": "enemy", "semantic_role": "Enemy" },
+    { "id": 1, "name": "player", "semantic_role": "Player" },
+    { "id": 2, "name": "friendly", "semantic_role": "Friendly" }
+  ]
+}
