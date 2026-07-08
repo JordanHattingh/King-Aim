@@ -1,5 +1,6 @@
 using Nefarius.ViGEm.Client;
 using Nefarius.ViGEm.Client.Targets;
+using Nefarius.ViGEm.Client.Targets.Xbox360;
 using Nefarius.ViGEm.Client.Exceptions;
 using Other;
 using LogLevel = Other.LogManager.LogLevel;
@@ -57,6 +58,7 @@ namespace Aimmy2.Gamepad
                 _controller.SetAxisValue(Xbox360Axis.RightThumbX, x);
                 _controller.SetAxisValue(Xbox360Axis.RightThumbY, y);
                 _controller.SubmitReport();
+
             }
             catch
             {

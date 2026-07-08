@@ -653,9 +653,9 @@ namespace Aimmy2.Controls
 
                     d.DropdownBox.SelectionChanged += (s, e) =>
                     {
-                        if (Other.FileManager.AIManager != null)
+                        if (FileManager.AIManager != null)
                         {
-                            MainWindow.ApplyGamepadTargetModeSetting(Other.FileManager.AIManager);
+                            MainWindow.ApplyGamepadTargetModeSetting(FileManager.AIManager);
                         }
                     };
                 }, tooltip: "Which detections the gamepad assist path is allowed to select. Never selects Friendly targets.")
@@ -699,7 +699,7 @@ namespace Aimmy2.Controls
             _gamepadStatusLabel.Content = connected ? "Gamepad: Connected" : "Gamepad: Disconnected";
             _gamepadStatusLabel.Foreground = connected ? System.Windows.Media.Brushes.LightGreen : System.Windows.Media.Brushes.OrangeRed;
 
-            var manager = Other.FileManager.AIManager;
+            var manager = FileManager.AIManager;
             if (manager == null)
             {
                 _gamepadDiagnosticsLabel.Content = "No model loaded.";

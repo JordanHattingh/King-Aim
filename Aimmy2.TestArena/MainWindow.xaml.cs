@@ -1,11 +1,11 @@
-using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
-using System.Windows.Shapes;
 using System.Windows.Threading;
 using Aimmy2.AILogic;
 using Aimmy2.Gamepad;
+using Path = System.IO.Path;
+using Rectangle = System.Windows.Shapes.Rectangle;
 
 namespace Aimmy2.TestArena
 {
@@ -150,14 +150,14 @@ namespace Aimmy2.TestArena
             try
             {
                 string modelsDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "models");
-                if (!Directory.Exists(modelsDir))
+                if (!System.IO.Directory.Exists(modelsDir))
                 {
                     ModelPathLabel.Text = "bin/models not found";
                     ModelPipelineCheckBox.IsChecked = false;
                     return;
                 }
 
-                string[] onnxFiles = Directory.GetFiles(modelsDir, "*.onnx");
+                string[] onnxFiles = System.IO.Directory.GetFiles(modelsDir, "*.onnx");
                 if (onnxFiles.Length == 0)
                 {
                     ModelPathLabel.Text = "No .onnx model found in bin/models";

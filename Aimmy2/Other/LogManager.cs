@@ -17,7 +17,7 @@ namespace Other
 
         public static void Log(LogLevel lvl, string message, bool notifyUser = false, int waitingTime = 4000)
         {
-            if (notifyUser)
+            if (notifyUser && Application.Current != null)
             {
                 Application.Current.Dispatcher.Invoke(() =>
                 {
