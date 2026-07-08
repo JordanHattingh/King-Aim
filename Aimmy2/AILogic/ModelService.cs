@@ -36,22 +36,33 @@ namespace Aimmy2.AILogic
                 .ToList();
         }
 
+        /// <summary>
+        /// Resolves a model's manifest. Checks the per-model path first (bin/models/Foo.manifest.json,
+        /// correct for a flat folder shared by many .onnx files), then the per-directory path (for the
+        /// Models/&lt;Name&gt;/model.onnx + manifest.json layout used by packaged models), and finally
+        /// falls back to auto-generating and persisting one next to the model file.
+        /// </summary>
         public static ModelManifest LoadOrCreateManifest(string modelDirectory, string onnxPath, IReadOnlyDictionary<int, string>? fallbackClasses = null)
         {
-            string manifestPath = ModelManifest.GetManifestPath(modelDirectory);
-
-            if (ModelManifest.TryLoad(manifestPath, out var manifest) && manifest != null)
+            string perModelManifestPath = ModelManifest.GetManifestPathForModel(onnxPath);
+            if (ModelManifest.TryLoad(perModelManifestPath, out var perModelManifest) && perModelManifest != null)
             {
-                return manifest;
+                return perModelManifest;
             }
 
-            string modelId = Path.GetFileName(modelDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            string perDirectoryManifestPath = ModelManifest.GetManifestPath(modelDirectory);
+            if (ModelManifest.TryLoad(perDirectoryManifestPath, out var perDirectoryManifest) && perDirectoryManifest != null)
+            {
+                return perDirectoryManifest;
+            }
+
+            string modelId = Path.GetFileNameWithoutExtension(onnxPath);
             var classes = fallbackClasses ?? new Dictionary<int, string> { { 0, "enemy" } };
             var fallback = ModelManifest.CreateFallback(modelId, modelId, classes);
 
             try
             {
-                fallback.Save(manifestPath);
+                fallback.Save(perModelManifestPath);
             }
             catch (Exception ex)
             {

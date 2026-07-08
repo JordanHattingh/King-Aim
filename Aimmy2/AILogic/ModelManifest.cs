@@ -38,8 +38,21 @@ namespace Aimmy2.AILogic
 
         public static string ManifestFileName => "manifest.json";
 
+        /// <summary>
+        /// Manifest path for a model living alone in its own folder (e.g. Models/EnemyDetectionV1/model.onnx).
+        /// </summary>
         public static string GetManifestPath(string modelDirectory) =>
             Path.Combine(modelDirectory, ManifestFileName);
+
+        /// <summary>
+        /// Manifest path for a model sharing a flat folder with other models (e.g. bin/models/*.onnx),
+        /// where a single manifest.json per folder would collide across different models. Named after
+        /// the model file itself: bin/models/Foo.onnx -> bin/models/Foo.manifest.json.
+        /// </summary>
+        public static string GetManifestPathForModel(string modelPath) =>
+            Path.Combine(
+                Path.GetDirectoryName(modelPath) ?? ".",
+                Path.GetFileNameWithoutExtension(modelPath) + ".manifest.json");
 
         public static ModelManifest Load(string manifestPath)
         {

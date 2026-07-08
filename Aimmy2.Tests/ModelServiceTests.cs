@@ -14,11 +14,12 @@ namespace Aimmy2.Tests
             try
             {
                 var classes = new Dictionary<int, string> { { 0, "enemy" } };
-                var manifest = ModelService.LoadOrCreateManifest(tempDir, Path.Combine(tempDir, "model.onnx"), classes);
+                string onnxPath = Path.Combine(tempDir, "model.onnx");
+                var manifest = ModelService.LoadOrCreateManifest(tempDir, onnxPath, classes);
 
                 Assert.Single(manifest.Classes);
                 Assert.Equal(SemanticRole.Enemy, manifest.Classes[0].SemanticRole);
-                Assert.True(File.Exists(ModelManifest.GetManifestPath(tempDir)));
+                Assert.True(File.Exists(ModelManifest.GetManifestPathForModel(onnxPath)));
             }
             finally
             {
@@ -41,6 +42,31 @@ namespace Aimmy2.Tests
 
                 Assert.Equal("custom-id", loaded.Id);
                 Assert.Equal(SemanticRole.Player, loaded.Classes[0].SemanticRole);
+            }
+            finally
+            {
+                Directory.Delete(tempDir, recursive: true);
+            }
+        }
+
+        [Fact]
+        public void LoadOrCreateManifest_KeepsSeparateModelsInSameFolderDistinct()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), "AimmyTests_" + Guid.NewGuid());
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string modelAPath = Path.Combine(tempDir, "GameA.onnx");
+                string modelBPath = Path.Combine(tempDir, "GameB.onnx");
+
+                var manifestA = ModelService.LoadOrCreateManifest(tempDir, modelAPath, new Dictionary<int, string> { { 0, "enemy" } });
+                var manifestB = ModelService.LoadOrCreateManifest(tempDir, modelBPath, new Dictionary<int, string> { { 0, "enemy" }, { 1, "teammate" } });
+
+                Assert.Single(manifestA.Classes);
+                Assert.Equal(2, manifestB.Classes.Count);
+                Assert.NotEqual(
+                    ModelManifest.GetManifestPathForModel(modelAPath),
+                    ModelManifest.GetManifestPathForModel(modelBPath));
             }
             finally
             {

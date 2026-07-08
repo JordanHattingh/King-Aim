@@ -85,6 +85,12 @@
   </ItemGroup>
 
 	<ItemGroup>
+		<Content Include="Models\**\*.json">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+	</ItemGroup>
+
+	<ItemGroup>
 		<Resource Include="Graphics\Fonts\akony.otf" />
 		<Resource Include="Graphics\Fonts\AtkinsonHyperlegible-Bold.ttf" />
 		<Resource Include="Graphics\Fonts\AtkinsonHyperlegible-BoldItalic.ttf" />
