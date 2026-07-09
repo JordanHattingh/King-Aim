@@ -158,27 +158,47 @@ namespace InputLogic
             Point end = new(targetX, targetY);
             Point newPosition = new Point(0, 0);
 
+            double t = 1.0 - AimSettings.MouseSensitivity;
             switch (AimSettings.MovementPath)
             {
+                case "Human Bezier":
+                    // Quadratic bezier with perpendicular arc — matches real wrist movement.
+                    // Recommended default for natural-looking aim.
+                    newPosition = MovementPaths.HumanBezier(start, end, t);
+                    break;
                 case "Cubic Bezier":
-                    Point control1 = new Point(start.X + (end.X - start.X) / 3, start.Y + (end.Y - start.Y) / 3);
-                    Point control2 = new Point(start.X + 2 * (end.X - start.X) / 3, start.Y + 2 * (end.Y - start.Y) / 3);
-                    newPosition = MovementPaths.CubicBezier(start, end, control1, control2, 1 - AimSettings.MouseSensitivity);
+                    // Fixed: control points now offset perpendicular to chord so it's an
+                    // actual curve, not the previous collinear (= linear) implementation.
+                    {
+                        double dx = end.X - start.X;
+                        double dy = end.Y - start.Y;
+                        double dist = Math.Sqrt(dx * dx + dy * dy);
+                        double px = dist > 1 ? -dy / dist : 0;
+                        double py = dist > 1 ?  dx / dist : 0;
+                        double off = dist * 0.12;
+                        Point control1 = new Point(
+                            (int)(start.X + dx / 3 + px * off),
+                            (int)(start.Y + dy / 3 + py * off));
+                        Point control2 = new Point(
+                            (int)(start.X + 2 * dx / 3 - px * off * 0.5),
+                            (int)(start.Y + 2 * dy / 3 - py * off * 0.5));
+                        newPosition = MovementPaths.CubicBezier(start, end, control1, control2, t);
+                    }
                     break;
                 case "Linear":
-                    newPosition = MovementPaths.Lerp(start, end, 1 - AimSettings.MouseSensitivity);
+                    newPosition = MovementPaths.Lerp(start, end, t);
                     break;
                 case "Exponential":
                     newPosition = MovementPaths.Exponential(start, end, 1 - (AimSettings.MouseSensitivity - 0.2), 3.0);
                     break;
                 case "Adaptive":
-                    newPosition = MovementPaths.Adaptive(start, end, 1 - AimSettings.MouseSensitivity);
+                    newPosition = MovementPaths.Adaptive(start, end, t);
                     break;
                 case "Perlin Noise":
-                    newPosition = MovementPaths.PerlinNoise(start, end, 1 - AimSettings.MouseSensitivity, 20, 0.5);
+                    newPosition = MovementPaths.PerlinNoise(start, end, t, 20, 0.5);
                     break;
                 default:
-                    newPosition = MovementPaths.Lerp(start, end, 1 - AimSettings.MouseSensitivity);
+                    newPosition = MovementPaths.Lerp(start, end, t);
                     break;
             }
 

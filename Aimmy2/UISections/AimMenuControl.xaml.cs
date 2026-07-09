@@ -265,6 +265,7 @@ namespace Aimmy2.Controls
                 {
                     d.DropdownBox.SelectedIndex = 0;
                     uiManager.D_MovementPath = d;
+                    _mainWindow.AddDropdownItem(d, "Human Bezier");
                     _mainWindow.AddDropdownItem(d, "Cubic Bezier");
                     _mainWindow.AddDropdownItem(d, "Exponential");
                     _mainWindow.AddDropdownItem(d, "Linear");

@@ -18,6 +18,39 @@ namespace InputLogic
             return new Point((int)x, (int)y);
         }
 
+        // Quadratic bezier with a perpendicular control-point offset so the cursor
+        // follows a subtle arc rather than a straight line — matches real wrist motion.
+        // offsetFactor: perpendicular displacement as a fraction of chord length (0.1–0.2 is natural).
+        internal static Point HumanBezier(Point start, Point end, double t, double offsetFactor = 0.15)
+        {
+            double dx = end.X - start.X;
+            double dy = end.Y - start.Y;
+            double dist = Math.Sqrt(dx * dx + dy * dy);
+
+            double cx, cy;
+            if (dist < 4.0)
+            {
+                // Too small to arc — plain lerp avoids jitter on tiny corrections.
+                cx = (start.X + end.X) * 0.5;
+                cy = (start.Y + end.Y) * 0.5;
+            }
+            else
+            {
+                // Control point: midpoint shifted perpendicular (clockwise) by offsetFactor * dist.
+                double perpX = -dy / dist;
+                double perpY =  dx / dist;
+                double offset = dist * offsetFactor;
+                cx = (start.X + end.X) * 0.5 + perpX * offset;
+                cy = (start.Y + end.Y) * 0.5 + perpY * offset;
+            }
+
+            // Quadratic bezier: P(t) = (1-t)^2*P0 + 2(1-t)t*P1 + t^2*P2
+            double u = 1.0 - t;
+            double px = u * u * start.X + 2 * u * t * cx + t * t * end.X;
+            double py = u * u * start.Y + 2 * u * t * cy + t * t * end.Y;
+            return new Point((int)px, (int)py);
+        }
+
         internal static Point Lerp(Point start, Point end, double t)
         {
             int x = (int)(start.X + (end.X - start.X) * t);

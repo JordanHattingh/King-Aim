@@ -1279,11 +1279,12 @@ namespace Aimmy2
 
                 ("Movement Path", uiManager.D_MovementPath, new Dictionary<string, int>
                 {
-                    ["Cubic Bezier"] = 0,
-                    ["Exponential"] = 1,
-                    ["Linear"] = 2,
-                    ["Adaptive"] = 3,
-                    ["Perlin Noise"] = 4
+                    ["Human Bezier"] = 0,
+                    ["Cubic Bezier"] = 1,
+                    ["Exponential"] = 2,
+                    ["Linear"] = 3,
+                    ["Adaptive"] = 4,
+                    ["Perlin Noise"] = 5
                 }),
 
                 ("Tracer Position", uiManager.D_TracerPosition, new Dictionary<string, int>

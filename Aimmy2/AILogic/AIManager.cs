@@ -67,6 +67,8 @@ namespace Aimmy2.AILogic
         private DateTime lastSavedTime = DateTime.MinValue;
         private List<string>? _outputNames;
         private RectangleF LastDetectionBox;
+        // Last confirmed target box in absolute screen coords — read by CaptureLoopAsync for ROI.
+        public RectangleF LastTargetScreenBox { get; private set; }
         private KalmanPrediction kalmanPrediction;
         private WiseTheFoxPrediction wtfpredictionManager;
 
@@ -731,6 +733,13 @@ namespace Aimmy2.AILogic
             }
         }
 
+        // Full FOV scan every N ROI frames so new targets are never missed.
+        private const int RoiRefreshInterval = 8;
+        // ROI box = max(target_w, target_h) * this factor, giving room for movement.
+        private const float RoiPaddingFactor = 4f;
+        // Smallest ROI we'll bother capturing — below this the upscale adds no info.
+        private const int RoiMinSize = 64;
+
         private async Task CaptureLoopAsync(CancellationToken cancellationToken)
         {
             try { Thread.CurrentThread.Priority = ThreadPriority.AboveNormal; } catch { }
@@ -747,25 +756,63 @@ namespace Aimmy2.AILogic
 
                     _captureManager.HandlePendingDisplayChanges();
 
-                    bool useDynamicFov = AimSettings.DynamicFovEnabled;
-                    int captureSize = IMAGE_SIZE;
-                    if (useDynamicFov)
+                    // Decide capture region: ROI around locked target, or full FOV.
+                    long frameId = Interlocked.Increment(ref _captureFrameId);
+                    bool useRoi = false;
+                    Rectangle detectionBox;
+                    float captureToModelScale;
+
+                    int? lockedTrack = SelectedTrackId;
+                    RectangleF lastBox = LastTargetScreenBox;
+                    bool roiFrame = frameId % RoiRefreshInterval != 0;
+
+                    if (roiFrame && lockedTrack.HasValue && lastBox.Width > 0)
                     {
-                        int dynamicSize = (int)AimSettings.DynamicFovSize;
-                        captureSize = Math.Clamp(dynamicSize, 10, IMAGE_SIZE);
+                        // Predict where target will be using velocity hint.
+                        float cx = lastBox.X + lastBox.Width * 0.5f
+                                   + TargetVelocityX * (IMAGE_SIZE / 2f) * 0.016f;
+                        float cy = lastBox.Y + lastBox.Height * 0.5f
+                                   + TargetVelocityY * (IMAGE_SIZE / 2f) * 0.016f;
+
+                        int roiSize = Math.Clamp(
+                            (int)(Math.Max(lastBox.Width, lastBox.Height) * RoiPaddingFactor),
+                            RoiMinSize,
+                            IMAGE_SIZE);
+
+                        int roiLeft  = (int)(cx - roiSize / 2f);
+                        int roiTop   = (int)(cy - roiSize / 2f);
+
+                        // Clamp to display bounds.
+                        roiLeft = Math.Clamp(roiLeft, ScreenLeft, ScreenLeft + ScreenWidth  - roiSize);
+                        roiTop  = Math.Clamp(roiTop,  ScreenTop,  ScreenTop  + ScreenHeight - roiSize);
+
+                        detectionBox       = new Rectangle(roiLeft, roiTop, roiSize, roiSize);
+                        captureToModelScale = roiSize / (float)IMAGE_SIZE;
+                        useRoi = true;
                     }
-                    float captureToModelScale = captureSize / (float)IMAGE_SIZE;
-                    Rectangle detectionBox = CreateDetectionBox(true, captureSize);
+                    else
+                    {
+                        // Full FOV path (dynamic FOV or fallback).
+                        bool useDynamicFov = AimSettings.DynamicFovEnabled;
+                        int captureSize = IMAGE_SIZE;
+                        if (useDynamicFov)
+                        {
+                            int dynamicSize = (int)AimSettings.DynamicFovSize;
+                            captureSize = Math.Clamp(dynamicSize, 10, IMAGE_SIZE);
+                        }
+                        captureToModelScale = captureSize / (float)IMAGE_SIZE;
+                        detectionBox = CreateDetectionBox(true, captureSize);
+                    }
 
                     var captureStart = DateTime.UtcNow;
                     Bitmap? bmp;
-                    using (Benchmark("ScreenGrab"))
+                    using (Benchmark(useRoi ? "ScreenGrab_ROI" : "ScreenGrab"))
                         bmp = _captureManager.ScreenGrab(detectionBox, allowStaleCache: false);
                     var captureEnd = DateTime.UtcNow;
 
                     if (bmp != null)
                         _frameMailbox.Post(new CapturedFrame(
-                            Interlocked.Increment(ref _captureFrameId),
+                            frameId,
                             captureStart, captureEnd,
                             detectionBox.Width, detectionBox.Height,
                             detectionBox, bmp, captureToModelScale));
@@ -1518,6 +1565,7 @@ namespace Aimmy2.AILogic
             float translatedYMin = target.Rectangle.Y + detectionBox.Top;
             LastDetectionBox = new(translatedXMin, translatedYMin,
                 target.Rectangle.Width, target.Rectangle.Height);
+            LastTargetScreenBox = LastDetectionBox;
 
             CenterXTranslated = target.CenterXTranslated;
             CenterYTranslated = target.CenterYTranslated;
