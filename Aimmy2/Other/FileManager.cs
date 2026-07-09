@@ -56,7 +56,7 @@ namespace Other
             {
                 foreach (string dir in appDirs)
                 {
-                    string fullPath = Class.SaveDictionary.ResolvePath(dir);
+                    string fullPath = SaveDictionary.ResolvePath(dir);
                     if (!Directory.Exists(fullPath))
                         Directory.CreateDirectory(fullPath);
                 }
@@ -241,7 +241,7 @@ namespace Other
             if (ConfigListBox.SelectedItem == null) return;
             string selectedConfig = ConfigListBox.SelectedItem.ToString()!;
 
-            string configPath = Path.Combine("bin/configs", selectedConfig);
+            string configPath = SaveDictionary.ResolvePath(Path.Combine("bin\\configs", selectedConfig));
             Dictionary.lastLoadedConfig = selectedConfig;
 
             Aimmy2.MainWindow.ApplyConfigLoadDefaults(Dictionary.sliderSettings);
@@ -256,8 +256,8 @@ namespace Other
             ModelFileWatcher = new FileSystemWatcher();
             ConfigFileWatcher = new FileSystemWatcher();
 
-            InitializeWatcher(ref ModelFileWatcher, "bin/models", "*.onnx");
-            InitializeWatcher(ref ConfigFileWatcher, "bin/configs", "*.cfg");
+            InitializeWatcher(ref ModelFileWatcher, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "models"), "*.onnx");
+            InitializeWatcher(ref ConfigFileWatcher, SaveDictionary.ResolvePath("bin\\configs"), "*.cfg");
         }
 
         private void InitializeWatcher(ref FileSystemWatcher watcher, string path, string filter)
@@ -374,7 +374,7 @@ namespace Other
             {
                 Application.Current.Dispatcher.Invoke(() =>
                 {
-                    string[] configFiles = Directory.GetFiles(Class.SaveDictionary.ResolvePath("bin\\configs"), "*.cfg");
+                    string[] configFiles = Directory.GetFiles(SaveDictionary.ResolvePath("bin\\configs"), "*.cfg");
                     ConfigListBox.Items.Clear();
 
                     foreach (string filePath in configFiles)

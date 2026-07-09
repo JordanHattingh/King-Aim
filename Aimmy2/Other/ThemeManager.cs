@@ -1,4 +1,5 @@
-﻿using Newtonsoft.Json;
+﻿using Class;
+using Newtonsoft.Json;
 using System.Globalization;
 using System.IO;
 using System.Windows;
@@ -78,8 +79,7 @@ namespace Aimmy2.Theme
         public static bool IsMediaBackground => _isMediaBackground;
         public static string CurrentMediaPath => _currentMediaPath;
         private static double _mediaBrightness = 1.0;
-        private const string MediaConfigPath = "bin\\media.cfg";
-        private static string _mediaConfigPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, MediaConfigPath);
+        private static readonly string _mediaConfigPath = SaveDictionary.ResolvePath("bin\\media.cfg");
         #endregion
         /// <summary>
         /// Sets the base theme color and updates all registered elements

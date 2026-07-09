@@ -196,16 +196,14 @@ namespace Aimmy2
 
         private void EnsureRequiredFiles()
         {
-            var labelsPath = "bin\\labels\\labels.txt";
+            var labelsPath = SaveDictionary.ResolvePath("bin\\labels\\labels.txt");
             var labelsDir = Path.GetDirectoryName(labelsPath);
 
-            // Ensure the directory exists
             if (!string.IsNullOrEmpty(labelsDir) && !Directory.Exists(labelsDir))
             {
                 Directory.CreateDirectory(labelsDir);
             }
 
-            // Create the file if it doesn't exist
             if (!File.Exists(labelsPath))
             {
                 File.WriteAllText(labelsPath, "Enemy");
@@ -481,7 +479,7 @@ namespace Aimmy2
 
                 previousSize = Dictionary.dropdownState["Image Size"];
                 loadedModel = Dictionary.lastLoadedModel;
-                modelPath = Path.Combine("bin/models", loadedModel);
+                modelPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "models", loadedModel);
                 AIManager managerToReplace = FileManager.AIManager;
                 LogManager.Log(LogManager.LogLevel.Info, $"Image size changing to {newSize}");
 
