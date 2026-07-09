@@ -159,6 +159,7 @@ namespace Aimmy2.AILogic
         public float RX { get; private set; }
         public float RY { get; private set; }
         public int AcquisitionFramesRemaining => _gamepadAssistController.AcquisitionFramesRemaining;
+        public bool PhysicalControllerConnected { get; private set; }
 
         public bool GamepadConnected => _gamepadOutput?.IsConnected ?? false;
 
@@ -1244,6 +1245,15 @@ namespace Aimmy2.AILogic
             _lastGamepadUpdate = now;
             _gamepadFrameCounter++;
 
+            // Auto-detect physical controller: scan all 4 XInput slots every ~5 seconds
+            // so the app picks up a controller plugged in after launch without any manual config.
+            if (_gamepadFrameCounter % 150 == 1)
+            {
+                uint found = _physicalGamepadReader.FindFirstConnectedIndex();
+                if (_physicalGamepadReader.Read(found).Connected)
+                    PhysicalGamepadIndex = found;
+            }
+
             // Auto-confidence calibration: keep a rolling window of per-frame detection counts.
             // If the average is consistently high (>5) the threshold is too low — too many false
             // positives bleed through. If consistently low (<1) the threshold is too aggressive.
@@ -1318,6 +1328,7 @@ namespace Aimmy2.AILogic
                 trackId: selection.SelectedTrack?.TrackId);
 
             PhysicalGamepadState physicalState = _physicalGamepadReader.Read(PhysicalGamepadIndex);
+            PhysicalControllerConnected = physicalState.Connected;
 
             // RT-triggered recoil compensation: when the player is firing (right trigger held),
             // add a small upward correction to counteract muzzle climb. Scales with trigger depth

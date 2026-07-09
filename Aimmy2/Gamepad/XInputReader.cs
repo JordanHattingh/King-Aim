@@ -62,9 +62,37 @@ namespace Aimmy2.Gamepad
             }
             catch (DllNotFoundException)
             {
-                // XInput unavailable (extremely unlikely on Windows, but never crash the AI loop for it).
                 return PhysicalGamepadState.Disconnected;
             }
+        }
+
+        /// <summary>
+        /// Scans all 4 XInput slots and returns the index of the first connected controller,
+        /// or 0 if none found. Use this at startup to auto-detect the active pad.
+        /// </summary>
+        public uint FindFirstConnectedIndex()
+        {
+            for (uint i = 0; i < 4; i++)
+            {
+                try
+                {
+                    if (XInputGetState(i, out _) == ERROR_SUCCESS)
+                        return i;
+                }
+                catch (DllNotFoundException) { break; }
+            }
+            return 0;
+        }
+
+        /// <summary>Returns true if any XInput slot has a controller connected.</summary>
+        public bool AnyConnected()
+        {
+            for (uint i = 0; i < 4; i++)
+            {
+                try { if (XInputGetState(i, out _) == ERROR_SUCCESS) return true; }
+                catch (DllNotFoundException) { break; }
+            }
+            return false;
         }
 
         private static float NormalizeAxis(short raw) =>
