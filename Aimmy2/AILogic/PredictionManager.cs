@@ -73,11 +73,11 @@ namespace AILogic
             _vx = Math.Clamp(_vx, -MaxVelocity, MaxVelocity);
             _vy = Math.Clamp(_vy, -MaxVelocity, MaxVelocity);
 
-            // Update covariance (position and velocity)
+            // Update covariance — position states only.
+            // Velocity is unobservable in a position-only measurement so _p22/_p33
+            // must not be reduced by the position gain K; they stay bounded by process noise.
             _p00 *= (1 - K);
             _p11 *= (1 - K);
-            _p22 *= (1 - K);
-            _p33 *= (1 - K);
 
             _lastUpdateTime = now;
         }

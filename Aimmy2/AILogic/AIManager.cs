@@ -31,6 +31,7 @@ namespace Aimmy2.AILogic
         #region Variables
 
         private int _currentImageSize;
+        private int _pendingImageSize;
         private readonly object _sizeLock = new object();
         private volatile bool _sizeChangePending = false;
 
@@ -38,6 +39,7 @@ namespace Aimmy2.AILogic
         {
             lock (_sizeLock)
             {
+                _pendingImageSize = newSize;
                 _sizeChangePending = true;
             }
         }
@@ -617,6 +619,22 @@ namespace Aimmy2.AILogic
                     {
                         if (sizeChangePending)
                         {
+                            int pendingSize;
+                            lock (_sizeLock)
+                            {
+                                pendingSize = _pendingImageSize;
+                                _sizeChangePending = false;
+                            }
+                            if (IsDynamicModel && pendingSize > 0 && pendingSize != IMAGE_SIZE)
+                            {
+                                _currentImageSize = pendingSize;
+                                NUM_DETECTIONS = CalculateNumDetections(pendingSize);
+                                _bitmapBuffer = new byte[3 * pendingSize * pendingSize];
+                                _reusableInputArray = null;
+                                _reusableTensor = null;
+                                ImageSizeUpdated?.Invoke(pendingSize);
+                                Log(LogLevel.Info, $"Image size changed to {pendingSize}x{pendingSize}", true, 2000);
+                            }
                             await Task.Delay(1, cancellationToken);
                             continue;
                         }
@@ -834,25 +852,30 @@ namespace Aimmy2.AILogic
 
         private async void UpdateFOV()
         {
-            if (AimSettings.DetectionAreaType == "Closest to Mouse" && AimSettings.ShowFov)
+            try
             {
-                var mousePosition = WinAPICaller.GetCursorPosition();
-
-                // Check if mouse is on the current display
-                if (!DisplayManager.IsPointInCurrentDisplay(new System.Windows.Point(mousePosition.X, mousePosition.Y)))
+                if (AimSettings.DetectionAreaType == "Closest to Mouse" && AimSettings.ShowFov)
                 {
-                    // Mouse is on a different display - don't update FOV position
-                    return;
+                    var mousePosition = WinAPICaller.GetCursorPosition();
+
+                    if (!DisplayManager.IsPointInCurrentDisplay(new System.Windows.Point(mousePosition.X, mousePosition.Y)))
+                        return;
+
+                    var displayRelativeX = mousePosition.X - DisplayManager.ScreenLeft;
+                    var displayRelativeY = mousePosition.Y - DisplayManager.ScreenTop;
+
+                    var fovWindow = Dictionary.FOVWindow;
+                    if (fovWindow == null) return;
+
+                    await Application.Current.Dispatcher.BeginInvoke(() =>
+                        fovWindow.FOVStrictEnclosure.Margin = new Thickness(
+                            Convert.ToInt16(displayRelativeX / WinAPICaller.scalingFactorX) - 320,
+                            Convert.ToInt16(displayRelativeY / WinAPICaller.scalingFactorY) - 320, 0, 0));
                 }
-
-                // Translate mouse position relative to current display
-                var displayRelativeX = mousePosition.X - DisplayManager.ScreenLeft;
-                var displayRelativeY = mousePosition.Y - DisplayManager.ScreenTop;
-
-                await Application.Current.Dispatcher.BeginInvoke(() =>
-                    Dictionary.FOVWindow.FOVStrictEnclosure.Margin = new Thickness(
-                        Convert.ToInt16(displayRelativeX / WinAPICaller.scalingFactorX) - 320, // this is based off the window size, not the size of the model -whip
-                        Convert.ToInt16(displayRelativeY / WinAPICaller.scalingFactorY) - 320, 0, 0));
+            }
+            catch (Exception ex)
+            {
+                Log(LogLevel.Warning, $"UpdateFOV error: {ex.Message}");
             }
         }
 
@@ -1981,6 +2004,7 @@ namespace Aimmy2.AILogic
                 _aiLoopCancellation = null;
                 _aiLoopTask = null;
                 _captureTask = null;
+                ShalloePredictionV2.Reset();
             }
         }
 

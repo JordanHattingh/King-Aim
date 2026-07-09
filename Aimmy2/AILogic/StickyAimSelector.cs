@@ -92,7 +92,7 @@ namespace Aimmy2.AILogic
             bool betterTargetCloser = nearestToCrosshairDistSq < currentTargetDistSq * 0.55f;
 
             bool aimTargetVeryCentered = nearestToCrosshairDistSq < stickyThreshold * stickyThreshold * 0.25f;
-            if (betterTargetCloser || aimTargetVeryCentered || _framesWithoutMatch >= 1)
+            if (betterTargetCloser || aimTargetVeryCentered || _framesWithoutMatch >= MaxFramesWithoutTarget)
             {
                 return AcquireNewTarget(aimTarget);
             }
