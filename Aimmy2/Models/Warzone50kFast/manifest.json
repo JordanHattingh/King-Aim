@@ -1,0 +1,13 @@
+{
+  "schema_version": "1",
+  "id": "warzone-50k-fast",
+  "name": "Warzone 50K Fast (320px)",
+  "version": "1.0.0",
+  "description": "Warzone 50K model at 320px input — faster inference, recommended for lower-end GPUs.",
+  "input_width": 320,
+  "input_height": 320,
+  "default_confidence": 0.28,
+  "classes": [
+    { "id": 0, "name": "enemy", "semantic_role": "Enemy" }
+  ]
+}

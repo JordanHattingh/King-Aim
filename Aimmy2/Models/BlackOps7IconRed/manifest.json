@@ -1,0 +1,13 @@
+{
+  "schema_version": "1",
+  "id": "black-ops-7-icon-red",
+  "name": "Black Ops 7 — Red Icon V2",
+  "version": "2.0.0",
+  "description": "BO7 model detecting the red enemy icon indicator. Works at distance. YOLOv8n 640px.",
+  "input_width": 640,
+  "input_height": 640,
+  "default_confidence": 0.30,
+  "classes": [
+    { "id": 0, "name": "enemy", "semantic_role": "Enemy" }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": "1",
+  "id": "warzone-zero-miss",
+  "name": "Warzone Zero-Miss (4.1K)",
+  "version": "1.0.0",
+  "description": "High-recall Warzone model trained on 4,100 images. YOLOv8s 640px — minimises missed detections.",
+  "input_width": 640,
+  "input_height": 640,
+  "default_confidence": 0.25,
+  "classes": [
+    { "id": 0, "name": "enemy", "semantic_role": "Enemy" }
+  ]
+}

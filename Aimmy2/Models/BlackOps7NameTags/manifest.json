@@ -1,0 +1,13 @@
+{
+  "schema_version": "1",
+  "id": "black-ops-7-nametags",
+  "name": "Black Ops 7 — Name Tags V2",
+  "version": "2.0.0",
+  "description": "BO7 model detecting enemy name tags above players. Very reliable in standard lobbies. YOLOv8n 640px.",
+  "input_width": 640,
+  "input_height": 640,
+  "default_confidence": 0.35,
+  "classes": [
+    { "id": 0, "name": "enemy", "semantic_role": "Enemy" }
+  ]
+}

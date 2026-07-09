@@ -1,0 +1,13 @@
+{
+  "schema_version": "1",
+  "id": "black-ops-6-v3",
+  "name": "Black Ops 6 V3",
+  "version": "3.0.0",
+  "description": "Community BO6 model V3. YOLOv8n 640px. Works in multiplayer and Warzone.",
+  "input_width": 640,
+  "input_height": 640,
+  "default_confidence": 0.30,
+  "classes": [
+    { "id": 0, "name": "enemy", "semantic_role": "Enemy" }
+  ]
+}

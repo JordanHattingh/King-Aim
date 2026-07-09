@@ -1,0 +1,13 @@
+{
+  "schema_version": "1",
+  "id": "warzone-50k-v1",
+  "name": "Warzone 50K Dataset V1",
+  "version": "1.0.0",
+  "description": "Warzone model trained on 50,000 images. YOLOv8n 640px. High accuracy.",
+  "input_width": 640,
+  "input_height": 640,
+  "default_confidence": 0.30,
+  "classes": [
+    { "id": 0, "name": "enemy", "semantic_role": "Enemy" }
+  ]
+}
