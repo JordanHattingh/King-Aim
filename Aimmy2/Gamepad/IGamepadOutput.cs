@@ -10,7 +10,7 @@ namespace Aimmy2.Gamepad
         /// instead of calling SetPassthroughState + SetRightStick separately, which produces
         /// two USB packets per frame and can cause button-state jitter between them.
         /// </summary>
-        void SetFullState(PhysicalGamepadState physicalState, float rx, float ry);
+        void SetFullState(PhysicalGamepadState physicalState, float rx, float ry, float? rtOverride = null);
 
         void SetRightStick(float rx, float ry);
         void SetPassthroughState(PhysicalGamepadState physicalState);

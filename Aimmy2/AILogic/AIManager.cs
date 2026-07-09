@@ -82,6 +82,9 @@ namespace Aimmy2.AILogic
         private bool _usingDirectML;
 
         private Task? _aiLoopTask;
+        private Task? _captureTask;
+        private readonly LatestFrameMailbox _frameMailbox = new();
+        private long _captureFrameId;
         private CancellationTokenSource? _aiLoopCancellation;
         private volatile bool _isAiLoopRunning;
         private volatile bool _benchmarkMode;
@@ -367,6 +370,13 @@ namespace Aimmy2.AILogic
                 loopCancellation,
                 TaskCreationOptions.LongRunning,
                 TaskScheduler.Default).Unwrap();
+
+            _captureTask = Task.Factory.StartNew(
+                () => CaptureLoopAsync(loopCancellation),
+                loopCancellation,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default).Unwrap();
+
             return Task.FromResult(true);
         }
 
@@ -611,8 +621,6 @@ namespace Aimmy2.AILogic
                             continue;
                         }
 
-                        _captureManager.HandlePendingDisplayChanges();
-
                         using (Benchmark("AILoopIteration"))
                         {
                             UpdateFOV();
@@ -624,10 +632,11 @@ namespace Aimmy2.AILogic
                                     Prediction? closestPrediction;
                                     using (Benchmark("GetClosestPrediction"))
                                     {
+                                        _frameMailbox.TryTake(out CapturedFrame? capturedFrame);
                                         await _inferenceGate.WaitAsync(cancellationToken);
                                         try
                                         {
-                                            closestPrediction = await GetClosestPrediction();
+                                            closestPrediction = await GetClosestPrediction(capturedFrame);
                                         }
                                         finally
                                         {
@@ -701,6 +710,58 @@ namespace Aimmy2.AILogic
             if (remainingMilliseconds > 1)
             {
                 await Task.Delay((int)Math.Floor(remainingMilliseconds), cancellationToken);
+            }
+        }
+
+        private async Task CaptureLoopAsync(CancellationToken cancellationToken)
+        {
+            try { Thread.CurrentThread.Priority = ThreadPriority.AboveNormal; } catch { }
+
+            while (_isAiLoopRunning && !cancellationToken.IsCancellationRequested)
+            {
+                try
+                {
+                    if (!ShouldProcess() || !ShouldPredict() || _benchmarkMode)
+                    {
+                        await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+                        continue;
+                    }
+
+                    _captureManager.HandlePendingDisplayChanges();
+
+                    bool useDynamicFov = AimSettings.DynamicFovEnabled;
+                    int captureSize = IMAGE_SIZE;
+                    if (useDynamicFov)
+                    {
+                        int dynamicSize = (int)AimSettings.DynamicFovSize;
+                        captureSize = Math.Clamp(dynamicSize, 10, IMAGE_SIZE);
+                    }
+                    float captureToModelScale = captureSize / (float)IMAGE_SIZE;
+                    Rectangle detectionBox = CreateDetectionBox(true, captureSize);
+
+                    var captureStart = DateTime.UtcNow;
+                    Bitmap? bmp;
+                    using (Benchmark("ScreenGrab"))
+                        bmp = _captureManager.ScreenGrab(detectionBox, allowStaleCache: false);
+                    var captureEnd = DateTime.UtcNow;
+
+                    if (bmp != null)
+                        _frameMailbox.Post(new CapturedFrame(
+                            Interlocked.Increment(ref _captureFrameId),
+                            captureStart, captureEnd,
+                            detectionBox.Width, detectionBox.Height,
+                            detectionBox, bmp, captureToModelScale));
+
+                    await Task.Yield();
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch
+                {
+                    await Task.Delay(1, cancellationToken).ConfigureAwait(false);
+                }
             }
         }
 
@@ -1030,36 +1091,36 @@ namespace Aimmy2.AILogic
             }
         }
 
-        private async Task<Prediction?> GetClosestPrediction(bool useMousePosition = true)
+        private async Task<Prediction?> GetClosestPrediction(CapturedFrame? capturedFrame = null, bool useMousePosition = true)
         {
             _lastPredictionRanInference = false;
 
-            // When Dynamic FOV is enabled and its keybind is held, capture fewer real screen
-            // pixels (a smaller box) and upscale that bitmap to the model's fixed IMAGE_SIZE
-            // input before inference — real optical zoom, not just a post-hoc detection filter.
-            // A smaller real capture means a distant/small target occupies proportionally more
-            // of the pixels the model actually sees.
-            // Optical zoom: when DynamicFov is enabled, always use the smaller capture region — no keybind required.
-            // Capturing fewer real pixels and upscaling to IMAGE_SIZE means far/small targets occupy
-            // proportionally more of the model's input, dramatically improving detection at range.
-            bool useDynamicFov = AimSettings.DynamicFovEnabled;
-            int captureSize = IMAGE_SIZE;
-            if (useDynamicFov)
-            {
-                int dynamicSize = (int)AimSettings.DynamicFovSize;
-                // Clamp: must be a positive size no larger than the model's own input, or this
-                // would be an upscale-then-downscale no-op (or invalid inverse scale) instead of zoom.
-                captureSize = Math.Clamp(dynamicSize, 10, IMAGE_SIZE);
-            }
-            float captureToModelScale = captureSize / (float)IMAGE_SIZE;
-
-            Rectangle detectionBox = CreateDetectionBox(useMousePosition, captureSize);
-
+            float captureToModelScale;
+            Rectangle detectionBox;
             Bitmap? frame;
 
-            using (Benchmark("ScreenGrab"))
+            if (capturedFrame != null)
             {
-                frame = _captureManager.ScreenGrab(detectionBox, allowStaleCache: _benchmarkMode);
+                // Use the pre-captured frame from the async capture loop — no screen grab needed.
+                captureToModelScale = capturedFrame.CaptureToModelScale;
+                detectionBox = capturedFrame.CaptureRegion;
+                frame = capturedFrame.Image;
+            }
+            else
+            {
+                // Fallback: capture synchronously (benchmark mode, or capture loop not yet running).
+                bool useDynamicFov = AimSettings.DynamicFovEnabled;
+                int captureSize = IMAGE_SIZE;
+                if (useDynamicFov)
+                {
+                    int dynamicSize = (int)AimSettings.DynamicFovSize;
+                    captureSize = Math.Clamp(dynamicSize, 10, IMAGE_SIZE);
+                }
+                captureToModelScale = captureSize / (float)IMAGE_SIZE;
+                detectionBox = CreateDetectionBox(useMousePosition, captureSize);
+
+                using (Benchmark("ScreenGrab"))
+                    frame = _captureManager.ScreenGrab(detectionBox, allowStaleCache: _benchmarkMode);
             }
 
             if (frame == null) return null;
@@ -1071,7 +1132,7 @@ namespace Aimmy2.AILogic
             try
             {
                 Bitmap modelInputFrame = frame;
-                if (captureSize != IMAGE_SIZE)
+                if (captureToModelScale != 1f)
                 {
                     using (Benchmark("ZoomResize"))
                     {
@@ -1381,10 +1442,18 @@ namespace Aimmy2.AILogic
 
             if (GamepadAssistEnabled && _gamepadOutput != null)
             {
+                // Auto-trigger: when locked on target and aligned, press RT to fire.
+                const float AutoTriggerThreshold = 0.15f;
+                float? rtOverride = null;
+                if (AimSettings.AutoTrigger && hasTarget &&
+                    Math.Abs(selection.ErrorX) < AutoTriggerThreshold &&
+                    Math.Abs(selection.ErrorY) < AutoTriggerThreshold)
+                    rtOverride = 1.0f;
+
                 // Single atomic report: passthrough + right-stick override in one USB packet.
                 // Previously two separate SubmitReport() calls caused per-frame button-state
                 // jitter between the two packets at the game's input layer.
-                _gamepadOutput.SetFullState(physicalState, rx, ry);
+                _gamepadOutput.SetFullState(physicalState, rx, ry, rtOverride);
             }
 
             // ── Mouse aim assist ──────────────────────────────────────────────────────
@@ -1890,10 +1959,13 @@ namespace Aimmy2.AILogic
             try
             {
                 Task? loopTask = _aiLoopTask;
-                if (loopTask != null && !loopTask.Wait(TimeSpan.FromSeconds(5)))
+                Task? captureTask = _captureTask;
+                var tasks = new[] { loopTask, captureTask }
+                    .Where(t => t != null).Cast<Task>().ToArray();
+                if (tasks.Length > 0 && !Task.WaitAll(tasks, TimeSpan.FromSeconds(5)))
                 {
                     Log(LogLevel.Warning, "AI loop is still stopping; waiting before disposing model resources.");
-                    loopTask.Wait();
+                    Task.WaitAll(tasks);
                 }
             }
             catch (AggregateException ex) when (ex.InnerExceptions.All(inner => inner is OperationCanceledException))
@@ -1908,6 +1980,7 @@ namespace Aimmy2.AILogic
                 _aiLoopCancellation?.Dispose();
                 _aiLoopCancellation = null;
                 _aiLoopTask = null;
+                _captureTask = null;
             }
         }
 
@@ -1937,6 +2010,7 @@ namespace Aimmy2.AILogic
             _gamepadOutput?.Disconnect();
 
             // Clean up other resources
+            _frameMailbox.Dispose();
             _reusableInputArray = null;
             _reusableInputs = null;
             _onnxModel?.Dispose();

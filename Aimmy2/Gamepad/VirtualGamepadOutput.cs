@@ -46,7 +46,7 @@ namespace Aimmy2.Gamepad
             }
         }
 
-        public void SetFullState(PhysicalGamepadState physicalState, float rx, float ry)
+        public void SetFullState(PhysicalGamepadState physicalState, float rx, float ry, float? rtOverride = null)
         {
             if (!IsConnected || _controller == null)
                 return;
@@ -58,7 +58,10 @@ namespace Aimmy2.Gamepad
                     _controller.SetAxisValue(Xbox360Axis.LeftThumbX, MapAxis(physicalState.LeftStickX));
                     _controller.SetAxisValue(Xbox360Axis.LeftThumbY, MapAxis(physicalState.LeftStickY));
                     _controller.SetSliderValue(Xbox360Slider.LeftTrigger, MapTrigger(physicalState.LeftTrigger));
-                    _controller.SetSliderValue(Xbox360Slider.RightTrigger, MapTrigger(physicalState.RightTrigger));
+                    float rt = rtOverride.HasValue
+                        ? Math.Max(rtOverride.Value, physicalState.RightTrigger)
+                        : physicalState.RightTrigger;
+                    _controller.SetSliderValue(Xbox360Slider.RightTrigger, MapTrigger(rt));
                     _controller.SetButtonsFull(physicalState.Buttons);
                 }
                 _controller.SetAxisValue(Xbox360Axis.RightThumbX, MapAxis(rx));

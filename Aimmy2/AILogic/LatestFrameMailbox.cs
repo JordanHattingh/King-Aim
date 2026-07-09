@@ -9,7 +9,8 @@ namespace Aimmy2.AILogic
         int Width,
         int Height,
         Rectangle CaptureRegion,
-        Bitmap Image);
+        Bitmap Image,
+        float CaptureToModelScale = 1f);
 
     public sealed class LatestFrameMailbox : IDisposable
     {

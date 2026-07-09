@@ -73,9 +73,11 @@ namespace AILogic
             _vx = Math.Clamp(_vx, -MaxVelocity, MaxVelocity);
             _vy = Math.Clamp(_vy, -MaxVelocity, MaxVelocity);
 
-            // Update covariance
+            // Update covariance (position and velocity)
             _p00 *= (1 - K);
             _p11 *= (1 - K);
+            _p22 *= (1 - K);
+            _p33 *= (1 - K);
 
             _lastUpdateTime = now;
         }
