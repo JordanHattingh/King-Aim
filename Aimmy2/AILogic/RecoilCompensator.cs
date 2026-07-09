@@ -34,9 +34,14 @@ namespace Aimmy2.AILogic
         public float[]? PatternY { get; set; }
         public float[]? PatternX { get; set; }
 
+        // Milliseconds between bullets at the configured fire rate (default 720 RPM = 83ms).
+        // Advance the shot-index on this cadence so the pattern matches the actual gun, not the AI frame rate.
+        public float FireRateMs { get; set; } = 83f;
+
         private int _shotIndex;
         private bool _wasFiring;
         private int _framesSinceShot;
+        private float _timeAccumulatorMs;
 
         // Built-in ramp: strong for first 8 shots, then steady.
         private static readonly float[] DefaultPatternY =
@@ -57,9 +62,10 @@ namespace Aimmy2.AILogic
 
         /// <summary>
         /// Call once per frame. isFiring should be true when the player is shooting.
+        /// frameDeltaMs is the elapsed time since the last call in milliseconds.
         /// Returns (dx, dy) pixel delta to apply via MouseAimOutput.ApplyRaw().
         /// </summary>
-        public (int dx, int dy) Update(bool isFiring)
+        public (int dx, int dy) Update(bool isFiring, float frameDeltaMs = 16.67f)
         {
             if (!Enabled || !isFiring)
             {
@@ -72,6 +78,7 @@ namespace Aimmy2.AILogic
                     {
                         _shotIndex = 0;
                         _framesSinceShot = 0;
+                        _timeAccumulatorMs = 0;
                     }
                 }
                 _wasFiring = false;
@@ -81,11 +88,20 @@ namespace Aimmy2.AILogic
             _wasFiring = true;
             _framesSinceShot = 0;
 
+            // Accumulate elapsed time and advance the shot index only when a full
+            // inter-bullet interval has elapsed — so at 720 RPM the pattern steps
+            // every 83ms regardless of AI frame rate (which is typically 60fps = 16ms).
+            _timeAccumulatorMs += frameDeltaMs;
+            if (_timeAccumulatorMs >= FireRateMs)
+            {
+                _timeAccumulatorMs -= FireRateMs;
+                _shotIndex++;
+            }
+
             float[] py = PatternY ?? DefaultPatternY;
             float[] px = PatternX ?? DefaultPatternX;
 
             int idx = Math.Min(_shotIndex, py.Length - 1);
-            _shotIndex++;
 
             float dy = -Strength * py[idx];             // negative = upward
             float dx = HorizontalDrift * px[idx];

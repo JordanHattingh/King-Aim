@@ -26,7 +26,11 @@ namespace Aimmy2.AILogic
 
         // Maximum pixels moved per call — hard cap so a bad detection
         // can't teleport the crosshair across the screen.
-        public float MaxPixelsPerFrame { get; set; } = 40f;
+        public float MaxPixelsPerFrame { get; set; } = 300f;
+
+        // Speed curve exponent: 1.0 = linear (instant, no slowdown near target).
+        // Values < 1 add a precision zone near centre at the cost of snap speed.
+        public float SpeedCurveExponent { get; set; } = 1.0f;
 
         // "SendInput" or "mouse_event"
         public string Method { get; set; } = "SendInput";
@@ -44,9 +48,15 @@ namespace Aimmy2.AILogic
             if (mag < DeadbandRadius)
                 return (0, 0);
 
+            // Adaptive speed: sub-linear curve so we snap fast when far but stay
+            // precise when the crosshair is almost on target. At mag=0.1 the
+            // multiplier is ~0.5×; at mag=1.0 it is 1.0×; everything in between
+            // follows a smooth power curve.
+            float adaptiveScale = MathF.Pow(mag, SpeedCurveExponent) / MathF.Max(mag, 1e-6f);
+
             // Scale normalised error to pixels, accumulate sub-pixel remainder.
-            _accumX += errorX * Sensitivity;
-            _accumY += errorY * Sensitivity;
+            _accumX += errorX * Sensitivity * adaptiveScale;
+            _accumY += errorY * Sensitivity * adaptiveScale;
 
             int dx = (int)_accumX;
             int dy = (int)_accumY;

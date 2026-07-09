@@ -188,8 +188,8 @@ namespace InputLogic
                 newPosition.Y = (int)EmaSmoothing(previousY, newPosition.Y, smoothingFactor);
             }
 
-            newPosition.X = Math.Clamp(newPosition.X, -150, 150);
-            newPosition.Y = Math.Clamp(newPosition.Y, -150, 150);
+            newPosition.X = Math.Clamp(newPosition.X, -400, 400);
+            newPosition.Y = Math.Clamp(newPosition.Y, -400, 400);
 
             newPosition.Y = (int)(newPosition.Y / aspectRatioCorrection);
 

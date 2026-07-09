@@ -1184,23 +1184,23 @@ namespace Aimmy2.AILogic
                     return null;
                 }
 
-                //kdtree was replaced with linear search
+                // Weighted target selection: score = distance² / confidence.
+                // A confident detection at the same distance beats a weak one, and a
+                // slightly closer weak detection can still lose to a confident far one.
                 Prediction? bestCandidate = null;
-                double bestDistSq = double.MaxValue;
+                double bestScore = double.MaxValue;
                 double center = IMAGE_SIZE / 2.0;
 
-                // TODO: Optimize this linear search further if needed
-                // TODO: Consider updating KD-Tree and adding options to switch from linear to kd.
-                // we can honestly replacing linear search by letting sticky aim handle the search
                 using (Benchmark("LinearSearch"))
                 {
                     foreach (var p in KDPredictions)
                     {
                         var dx = p.CenterXTranslated * IMAGE_SIZE - center;
                         var dy = p.CenterYTranslated * IMAGE_SIZE - center;
-                        double d2 = dx * dx + dy * dy; // dx^2 + dy^2
+                        double d2 = dx * dx + dy * dy;
+                        double score = d2 / Math.Max(0.01, p.Confidence);
 
-                        if (d2 < bestDistSq) { bestDistSq = d2; bestCandidate = p; }
+                        if (score < bestScore) { bestScore = score; bestCandidate = p; }
                     }
                 }
 
@@ -1294,10 +1294,10 @@ namespace Aimmy2.AILogic
                 double confNow = AimSettings.MinimumConfidence;
                 if (avgDetections > 5.0 && confNow < 0.65)
                     Class.Dictionary.sliderSettings["AI Minimum Confidence"] =
-                        Math.Round((confNow + 0.01) * 100.0, 0);
+                        Math.Round((confNow + 0.002) * 100.0, 1);
                 else if (avgDetections < 1.0 && confNow > 0.15)
                     Class.Dictionary.sliderSettings["AI Minimum Confidence"] =
-                        Math.Round((confNow - 0.01) * 100.0, 0);
+                        Math.Round((confNow - 0.002) * 100.0, 1);
             }
 
             _gamepadAssistController.Gain = (float)AimSettings.GamepadAssistStrength;
@@ -1412,7 +1412,7 @@ namespace Aimmy2.AILogic
             bool rtHeld = physicalState.Connected && physicalState.RightTrigger > 0.15f;
             bool isFiring = lmbHeld || rtHeld;
 
-            var (rcDx, rcDy) = _recoilCompensator.Update(isFiring);
+            var (rcDx, rcDy) = _recoilCompensator.Update(isFiring, (float)(dtSeconds * 1000.0));
             if (rcDx != 0 || rcDy != 0)
                 _mouseAimOutput.ApplyRaw(rcDx, rcDy);
         }

@@ -24,11 +24,11 @@ namespace Aimmy2.Class
             { "AI FPS Limit", 0 },
             { "FOV Size", 640 },
             { "Dynamic FOV Size", 200 },
-            { "Mouse Sensitivity (+/-)", 0.80 },
-            { "Mouse Jitter", 4 },
+            { "Mouse Sensitivity (+/-)", 0.10 },
+            { "Mouse Jitter", 0 },
             { "Sticky Aim Threshold", 50 },
             { "Y Offset (Up/Down)", 0 },
-            { "Y Offset (%)", 50 },
+            { "Y Offset (%)", 25 },
             { "X Offset (Left/Right)", 0 },
             { "X Offset (%)", 50 },
             { "EMA Smoothening", 0.5},
@@ -41,8 +41,8 @@ namespace Aimmy2.Class
             { "Corner Radius", 0 },
             { "Border Thickness", 1 },
             { "Opacity", 1 },
-            { "Gamepad Assist Strength", 1.5 },
-            { "Gamepad Assist Smoothness", 0.25 },
+            { "Gamepad Assist Strength", 3.0 },
+            { "Gamepad Assist Smoothness", 0.10 },
             { "Viewmodel Exclusion Zone", 20 },
             { "Cursor Exclusion Radius", 30 }
         };
@@ -80,7 +80,7 @@ namespace Aimmy2.Class
             //--
             { "X Axis Percentage Adjustment", false },
             { "Y Axis Percentage Adjustment", false },
-            { "Gamepad Assist", false }
+            { "Gamepad Assist", true }
         };
 
         public static Dictionary<string, dynamic> minimizeState = new()
@@ -104,10 +104,10 @@ namespace Aimmy2.Class
             { "Prediction Method", "Kalman Filter" },
             { "Detection Area Type", "Closest to Center Screen" },
             { "Aiming Boundaries Alignment", "Center" },
-            { "Mouse Movement Method", "Mouse Event" },
+            { "Mouse Movement Method", "SendInput" },
             { "Screen Capture Method", "DirectX" },
             { "Tracer Position", "Bottom" },
-            { "Movement Path", "Cubic Bezier" },
+            { "Movement Path", "Linear" },
             { "Image Size", "640" },
             { "Target Class", "Best Confidence" },
             { "Gamepad Target Mode", "Enemy Only" }

@@ -2,7 +2,7 @@ namespace Aimmy2.AILogic
 {
     internal sealed class StickyAimSelector
     {
-        private const int MaxFramesWithoutTarget = 3;
+        private const int MaxFramesWithoutTarget = 8;
         private const float LockScoreDecay = 0.85f;
         private const float LockScoreGain = 15f;
         private const float MaxLockScore = 100f;
@@ -83,8 +83,16 @@ namespace Aimmy2.AILogic
 
             _framesWithoutMatch++;
 
+            // Switch immediately if the new candidate is significantly closer to the
+            // crosshair than the current target — covers the case where a second enemy
+            // steps in front of the one being tracked.
+            float currentTargetDistSq = GetDistanceSq(
+                _currentTarget.ScreenCenterX, _currentTarget.ScreenCenterY,
+                screenCenterX, screenCenterY);
+            bool betterTargetCloser = nearestToCrosshairDistSq < currentTargetDistSq * 0.55f;
+
             bool aimTargetVeryCentered = nearestToCrosshairDistSq < stickyThreshold * stickyThreshold * 0.25f;
-            if (aimTargetVeryCentered || _framesWithoutMatch >= 3)
+            if (betterTargetCloser || aimTargetVeryCentered || _framesWithoutMatch >= 1)
             {
                 return AcquireNewTarget(aimTarget);
             }

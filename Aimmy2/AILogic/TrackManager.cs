@@ -42,7 +42,7 @@ namespace Aimmy2.AILogic
         /// regardless of the AI loop's real FPS — a frame-count-only rule loses tracks almost
         /// instantly when FPS is low (e.g. 5 missed frames at 5 FPS is a full second gone).
         /// </summary>
-        public double MaxLostSeconds { get; set; } = 2.0;
+        public double MaxLostSeconds { get; set; } = 0.6;
 
         public IReadOnlyList<Track> ActiveTracks => _tracks;
 

@@ -16,12 +16,12 @@ namespace Aimmy2.Gamepad
         public int MaxObservationAge { get; set; } = 25;
         /// <summary>Scales the normalized target velocity added as feed-forward to lead moving targets.</summary>
         public float VelocityFeedForwardGain { get; set; } = 0.4f;
-        /// <summary>EMA alpha for error smoothing: 0 = frozen, 1 = raw. Higher = more responsive, more jitter.</summary>
-        public float SmoothingAlpha { get; set; } = 0.65f;
+        /// <summary>EMA alpha for error smoothing: 0 = frozen, 1 = raw. 1.0 = no smoothing lag.</summary>
+        public float SmoothingAlpha { get; set; } = 1.0f;
         /// <summary>Frames to apply the acquisition gain boost when a new target is first locked.</summary>
-        public int AcquisitionBoostFrames { get; set; } = 6;
-        /// <summary>Gain multiplier applied during the acquisition burst window. 1.0 = no boost.</summary>
-        public float AcquisitionBoostFactor { get; set; } = 1.8f;
+        public int AcquisitionBoostFrames { get; set; } = 2;
+        /// <summary>Gain multiplier applied during the acquisition burst window.</summary>
+        public float AcquisitionBoostFactor { get; set; } = 3.0f;
         /// <summary>Minimum detection confidence required for full assist. Below this the assist output is scaled down.</summary>
         public float MinConfidenceForFullAssist { get; set; } = 0.70f;
 
