@@ -4,7 +4,23 @@ namespace InputLogic
 {
     class MovementPaths
     {
-        private static readonly int[] permutation = new int[512];
+        private static readonly int[] permutation;
+
+        static MovementPaths()
+        {
+            // Standard Perlin permutation: 0-255 shuffled with fixed seed, then doubled.
+            // The previous all-zeros array produced constant-zero noise on every call.
+            int[] p = new int[256];
+            for (int i = 0; i < 256; i++) p[i] = i;
+            var rng = new Random(42);
+            for (int i = 255; i > 0; i--)
+            {
+                int j = rng.Next(i + 1);
+                (p[i], p[j]) = (p[j], p[i]);
+            }
+            permutation = new int[512];
+            for (int i = 0; i < 512; i++) permutation[i] = p[i & 255];
+        }
 
         internal static Point CubicBezier(Point start, Point end, Point control1, Point control2, double t)
         {
@@ -65,19 +81,14 @@ namespace InputLogic
             return new Point((int)x, (int)y);
         }
 
-        internal static Point Adaptive(Point start, Point end, double t, double threshold = 100.0)
+        // Short distances: lerp (no visible arc needed).
+        // Long distances: HumanBezier arc for natural deceleration into target.
+        internal static Point Adaptive(Point start, Point end, double t, double threshold = 80.0)
         {
             double distance = Math.Sqrt(Math.Pow(end.X - start.X, 2) + Math.Pow(end.Y - start.Y, 2));
-            if (distance < threshold)
-            {
-                return Lerp(start, end, t);
-            }
-            else
-            {
-                Point control1 = new Point(start.X + (end.X - start.X) / 3, start.Y + (end.Y - start.Y) / 3);
-                Point control2 = new Point(start.X + 2 * (end.X - start.X) / 3, start.Y + 2 * (end.Y - start.Y) / 3);
-                return CubicBezier(start, end, control1, control2, t);
-            }
+            return distance < threshold
+                ? Lerp(start, end, t)
+                : HumanBezier(start, end, t, offsetFactor: 0.10);
         }
 
         internal static Point PerlinNoise(Point start, Point end, double t, double amplitude = 10.0, double frequency = 0.1)

@@ -77,7 +77,8 @@ namespace AILogic
                 }
                 catch (Exception ex)
                 {
-
+                    LogManager.Log(LogLevel.Error, $"Failed to reinitialize DirectX after display change: {ex.Message}", true, 5000);
+                    // Keep _displayChangesPending = true so the next capture attempt retries.
                 }
             }
         }

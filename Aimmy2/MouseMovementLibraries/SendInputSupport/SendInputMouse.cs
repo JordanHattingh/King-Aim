@@ -10,8 +10,8 @@ namespace MouseMovementLibraries.SendInputSupport
 
         // Nori
 
-        [DllImport("user32.dll")]
-        private static extern void SendInput(int nInputs, INPUT[] pInputs, int cbSize);
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint SendInput(int nInputs, INPUT[] pInputs, int cbSize);
 
         [StructLayout(LayoutKind.Sequential)]
         private struct INPUT
