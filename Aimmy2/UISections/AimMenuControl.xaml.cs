@@ -710,14 +710,16 @@ namespace Aimmy2.Controls
 
             string acqBurst = manager.AcquisitionFramesRemaining > 0 ? $"  BURST:{manager.AcquisitionFramesRemaining}" : "";
             string physCtrl = manager.PhysicalControllerConnected
-                ? $"Physical: SLOT {manager.PhysicalGamepadIndex} ✓"
-                : "Physical: NOT DETECTED";
+                ? $"Controller: SLOT {manager.PhysicalGamepadIndex} ✓"
+                : "Controller: NOT DETECTED";
+            string mouseAim = manager.MouseAimEnabled ? "Mouse Aim: ON" : "Mouse Aim: OFF";
+            string recoil = manager.RecoilCompensationEnabled ? "Recoil: ON" : "Recoil: OFF";
             _gamepadDiagnosticsLabel.Content =
                 $"Capture FPS: {manager.CaptureFps:F1}  Inference: {manager.InferenceMs:F1}ms  Frame Age: {manager.FrameAge:F1}ms\n" +
-                $"Players: {manager.PlayerDetections}  Enemies: {manager.EnemyDetections}  Friendlies: {manager.FriendlyDetections}  Tracks: {manager.ActiveTracks}\n" +
-                $"Selected: #{(manager.SelectedTrackId?.ToString() ?? "-")} ({manager.SelectedClass ?? "-"})  ErrX: {manager.ErrorX:F2}  ErrY: {manager.ErrorY:F2}{acqBurst}\n" +
-                $"TargetVel: ({manager.TargetVelocityX:F1}, {manager.TargetVelocityY:F1})  RX: {manager.RX:F2}  RY: {manager.RY:F2}\n" +
-                $"{physCtrl}  Virtual: {(connected ? "OK" : "NOT CONNECTED")}";
+                $"Enemies: {manager.EnemyDetections}  Tracks: {manager.ActiveTracks}  Selected: #{(manager.SelectedTrackId?.ToString() ?? "-")} ({manager.SelectedClass ?? "-"})\n" +
+                $"ErrX: {manager.ErrorX:F2}  ErrY: {manager.ErrorY:F2}  Vel: ({manager.TargetVelocityX:F1},{manager.TargetVelocityY:F1}){acqBurst}\n" +
+                $"RX: {manager.RX:F2}  RY: {manager.RY:F2}  {mouseAim}  {recoil}\n" +
+                $"{physCtrl}  Virtual: {(connected ? "OK" : "OFF")}";
         }
 
         #endregion

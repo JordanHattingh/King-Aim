@@ -118,6 +118,10 @@ namespace Aimmy2.AILogic
         private readonly object _benchmarkLock = new();
 
 
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern short GetAsyncKeyState(int vKey);
+        private static bool IsLmbDown() => (GetAsyncKeyState(0x01) & 0x8000) != 0;
+
         private readonly CaptureManager _captureManager = new();
         private readonly StickyAimSelector _stickyAimSelector = new();
 
@@ -127,9 +131,29 @@ namespace Aimmy2.AILogic
         private readonly TargetSelector _targetSelector = new();
         private readonly GamepadAssistController _gamepadAssistController = new();
         private readonly XInputReader _physicalGamepadReader = new();
+        private readonly MouseAimOutput _mouseAimOutput = new();
+        private readonly RecoilCompensator _recoilCompensator = new();
         private IGamepadOutput? _gamepadOutput;
         private long _gamepadFrameCounter;
         private DateTime _lastGamepadUpdate = DateTime.UtcNow;
+
+        // Mouse aim assist — enabled independently of gamepad assist.
+        public bool MouseAimEnabled { get; set; } = true;
+        public bool RecoilCompensationEnabled
+        {
+            get => _recoilCompensator.Enabled;
+            set => _recoilCompensator.Enabled = value;
+        }
+        public float MouseAimSensitivity
+        {
+            get => _mouseAimOutput.Sensitivity;
+            set => _mouseAimOutput.Sensitivity = value;
+        }
+        public float RecoilStrengthMouse
+        {
+            get => _recoilCompensator.Strength;
+            set => _recoilCompensator.Strength = value;
+        }
 
         // Auto-confidence calibration: rolling window of detection counts per frame.
         // Nudges MinimumConfidence up when too many boxes survive, down when too few.
@@ -1359,6 +1383,38 @@ namespace Aimmy2.AILogic
                 _gamepadOutput.SetPassthroughState(physicalState);
                 _gamepadOutput.SetRightStick(rx, ry);
             }
+
+            // ── Mouse aim assist ──────────────────────────────────────────────────────
+            // Runs through the same PID error signal as the gamepad path but drives the
+            // real mouse cursor instead of (or in addition to) virtual stick output.
+            // Active whenever MouseAimEnabled is set and the aim keybind is held (or
+            // ConstantAiTracking is on). This works for both mouse+KB and controller
+            // players because it moves the underlying OS cursor.
+            bool mouseAimActive = MouseAimEnabled &&
+                (AimSettings.ConstantAiTracking ||
+                 InputBindingManager.IsHoldingBinding("Aim Keybind") ||
+                 InputBindingManager.IsHoldingBinding("Second Aim Keybind"));
+
+            if (mouseAimActive && hasTarget)
+            {
+                _mouseAimOutput.Sensitivity = MouseAimSensitivity;
+                _mouseAimOutput.Move(selection.ErrorX, selection.ErrorY);
+            }
+            else if (!hasTarget)
+            {
+                _mouseAimOutput.Reset();
+            }
+
+            // ── Recoil compensation (mouse) ───────────────────────────────────────────
+            // Fires when left mouse button is held (PC mouse players) OR right trigger
+            // is held past threshold on a physical controller — whichever applies.
+            bool lmbHeld = IsLmbDown();
+            bool rtHeld = physicalState.Connected && physicalState.RightTrigger > 0.15f;
+            bool isFiring = lmbHeld || rtHeld;
+
+            var (rcDx, rcDy) = _recoilCompensator.Update(isFiring);
+            if (rcDx != 0 || rcDy != 0)
+                _mouseAimOutput.ApplyRaw(rcDx, rcDy);
         }
 
         private void UpdateDetectionBox(Prediction target, Rectangle detectionBox)
