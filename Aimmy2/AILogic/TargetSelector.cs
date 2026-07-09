@@ -13,7 +13,7 @@ namespace Aimmy2.AILogic
 
     public sealed class TargetSelector
     {
-        private const int DefaultConfirmationFrames = 3;
+        private const int DefaultConfirmationFrames = 1;
 
         private int? _currentTrackId;
         private int? _challengerTrackId;
@@ -21,13 +21,19 @@ namespace Aimmy2.AILogic
 
         public int ConfirmationFrames { get; set; } = DefaultConfirmationFrames;
 
+        /// <summary>Max frames of lead applied when target moves at ReferenceVelocity. Scales to zero when stationary.</summary>
+        public float LeadFrames { get; set; } = 1.5f;
+        /// <summary>Pixels/frame at which LeadFrames is applied at full value. Above this speed, lead is capped at 2×LeadFrames.</summary>
+        public float ReferenceVelocity { get; set; } = 8f;
+
         public TargetSelectionResult Select(
             IReadOnlyList<Track> tracks,
             TargetMode mode,
             SemanticRole roleFilter,
             int? fixedTrackId,
             PointF screenCenter,
-            float normalizationRadius)
+            float normalizationRadius,
+            float aimPointFraction = 0.25f)
         {
             ArgumentNullException.ThrowIfNull(tracks);
 
@@ -101,21 +107,42 @@ namespace Aimmy2.AILogic
                 }
             }
 
-            PointF center = TrackCenter(selected.BoundingBox);
+            // Aim point: vertical fraction of the bounding box (0=top, 0.5=center, 1=bottom).
+            // Full-body models use 0.25 (head/chest). Head-only models use 0.5 (center of head box).
+            float aimX = selected.BoundingBox.X + selected.BoundingBox.Width * 0.5f;
+            float aimY = selected.BoundingBox.Y + selected.BoundingBox.Height * aimPointFraction;
+
+            // Dynamic lead: scale lead frames by how fast the target is actually moving.
+            // Stationary targets get zero lead (no phantom offset); fast strafers get up to 2× lead.
+            float velocityMag = MathF.Sqrt(selected.Velocity.X * selected.Velocity.X + selected.Velocity.Y * selected.Velocity.Y);
+            float velocityScale = ReferenceVelocity > 0
+                ? Math.Clamp(velocityMag / ReferenceVelocity, 0f, 2f)
+                : 0f;
+            float effectiveLead = LeadFrames * velocityScale;
+
+            float maxDim = Math.Max(selected.BoundingBox.Width, selected.BoundingBox.Height);
+            float maxLead = maxDim * 2f;
+            aimX += Math.Clamp(selected.Velocity.X * effectiveLead, -maxLead, maxLead);
+            aimY += Math.Clamp(selected.Velocity.Y * effectiveLead, -maxLead, maxLead);
+
             float errorX = normalizationRadius > 0
-                ? Math.Clamp((center.X - screenCenter.X) / normalizationRadius, -1f, 1f)
+                ? Math.Clamp((aimX - screenCenter.X) / normalizationRadius, -1f, 1f)
                 : 0f;
             float errorY = normalizationRadius > 0
-                ? Math.Clamp((center.Y - screenCenter.Y) / normalizationRadius, -1f, 1f)
+                ? Math.Clamp((aimY - screenCenter.Y) / normalizationRadius, -1f, 1f)
                 : 0f;
+
+            // Normalize velocity into the same -1..+1 space as errorX/Y so feed-forward works correctly.
+            float velX = normalizationRadius > 0 ? selected.Velocity.X / normalizationRadius : 0f;
+            float velY = normalizationRadius > 0 ? selected.Velocity.Y / normalizationRadius : 0f;
 
             return new TargetSelectionResult
             {
                 SelectedTrack = selected,
                 ErrorX = errorX,
                 ErrorY = errorY,
-                TargetVelocityX = selected.Velocity.X,
-                TargetVelocityY = selected.Velocity.Y,
+                TargetVelocityX = velX,
+                TargetVelocityY = velY,
             };
         }
 

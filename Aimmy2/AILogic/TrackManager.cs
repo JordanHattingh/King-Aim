@@ -1,3 +1,4 @@
+using AILogic;
 using System.Drawing;
 
 namespace Aimmy2.AILogic
@@ -14,6 +15,10 @@ namespace Aimmy2.AILogic
         public int FramesSinceLastSeen { get; internal set; }
         public PointF Velocity { get; internal set; }
         public int ObservationCount { get; internal set; }
+
+        // Per-track Kalman filter: gives smoothed position + velocity estimates
+        // under noisy detections, replacing the simple EMA velocity tracker.
+        internal KalmanPrediction Kalman { get; } = new();
 
         internal PointF Center => new(
             BoundingBox.X + BoundingBox.Width / 2f,
@@ -37,7 +42,7 @@ namespace Aimmy2.AILogic
         /// regardless of the AI loop's real FPS — a frame-count-only rule loses tracks almost
         /// instantly when FPS is low (e.g. 5 missed frames at 5 FPS is a full second gone).
         /// </summary>
-        public double MaxLostSeconds { get; set; } = 1.0;
+        public double MaxLostSeconds { get; set; } = 2.0;
 
         public IReadOnlyList<Track> ActiveTracks => _tracks;
 
@@ -58,11 +63,14 @@ namespace Aimmy2.AILogic
                 double dt = Math.Max(0, (frameTime - track.LastSeen).TotalSeconds);
                 if (dt > 0 && dt < MaxLostSeconds)
                 {
+                    // Use Kalman extrapolation for lost-track prediction: the filter accounts for
+                    // elapsed time and velocity uncertainty, giving a better estimate than raw pixel velocity.
+                    var predicted = track.Kalman.GetKalmanPosition(mouseSpeed: 0);
+                    float halfW = track.BoundingBox.Width / 2f;
+                    float halfH = track.BoundingBox.Height / 2f;
                     track.BoundingBox = new RectangleF(
-                        track.BoundingBox.X + track.Velocity.X,
-                        track.BoundingBox.Y + track.Velocity.Y,
-                        track.BoundingBox.Width,
-                        track.BoundingBox.Height);
+                        predicted.X - halfW, predicted.Y - halfH,
+                        track.BoundingBox.Width, track.BoundingBox.Height);
                 }
             }
 
@@ -139,18 +147,39 @@ namespace Aimmy2.AILogic
 
         private static void UpdateTrackWithDetection(Track track, Prediction detection, DateTime frameTime)
         {
-            PointF oldCenter = TrackCenter(track.BoundingBox);
             PointF newCenter = DetectionCenter(detection);
 
-            float newVelX = newCenter.X - oldCenter.X;
-            float newVelY = newCenter.Y - oldCenter.Y;
+            // Feed the raw detection into the per-track Kalman filter.
+            track.Kalman.UpdateKalmanFilter(new KalmanPrediction.Detection
+            {
+                X = (int)newCenter.X,
+                Y = (int)newCenter.Y,
+                Timestamp = frameTime,
+            });
 
-            const float smoothing = 0.7f;
+            // Ask Kalman for its smoothed current estimate (lead=0).
+            // This gives a noise-filtered position rather than the raw detection jitter.
+            var smoothed = track.Kalman.GetKalmanPosition(mouseSpeed: 0);
+
+            // Derive velocity from the Kalman state (smoothed estimate vs previous smoothed position).
+            // Use the old bounding-box centre as the "previous" for velocity calculation.
+            PointF oldCenter = TrackCenter(track.BoundingBox);
+            float velX = smoothed.X - oldCenter.X;
+            float velY = smoothed.Y - oldCenter.Y;
+
+            // Light EMA on top of Kalman velocity to damp sudden spikes (Kalman velocity can
+            // jump on first-observation frames when the filter is not yet converged).
+            const float velSmoothing = 0.5f;
             track.Velocity = new PointF(
-                track.Velocity.X * smoothing + newVelX * (1 - smoothing),
-                track.Velocity.Y * smoothing + newVelY * (1 - smoothing));
+                track.Velocity.X * velSmoothing + velX * (1f - velSmoothing),
+                track.Velocity.Y * velSmoothing + velY * (1f - velSmoothing));
 
-            track.BoundingBox = detection.Rectangle;
+            // Use the Kalman-smoothed centre to reposition the bounding box, keeping its size unchanged.
+            float halfW = detection.Rectangle.Width / 2f;
+            float halfH = detection.Rectangle.Height / 2f;
+            track.BoundingBox = new RectangleF(smoothed.X - halfW, smoothed.Y - halfH,
+                detection.Rectangle.Width, detection.Rectangle.Height);
+
             track.Confidence = detection.Confidence;
             track.ClassName = detection.ClassName;
             track.LastSeen = frameTime;

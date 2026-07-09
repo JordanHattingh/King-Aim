@@ -45,6 +45,14 @@ namespace Aimmy2.AILogic
 
             int selectedClassId = ResolveSelectedClassId(modelClasses, selectedClass);
 
+            // Circular FOV: inscribed circle of the rectangular FOV box.
+            // Keeps the effective detection zone round (matching game reticles) and discards
+            // corner detections that slip through the rectangular check but are outside the FOV circle.
+            float fovCenterX = (fovMinX + fovMaxX) * 0.5f;
+            float fovCenterY = (fovMinY + fovMaxY) * 0.5f;
+            float fovCircleRadius = Math.Min(fovMaxX - fovMinX, fovMaxY - fovMinY) * 0.5f;
+            float fovCircleRadiusSq = fovCircleRadius * fovCircleRadius;
+
             var predictions = new List<Prediction>(numDetections);
 
             for (int i = 0; i < numDetections; i++)
@@ -91,6 +99,11 @@ namespace Aimmy2.AILogic
 
                 if (xMin < fovMinX || xMax > fovMaxX || yMin < fovMinY || yMax > fovMaxY) continue;
 
+                // Circular FOV check: discard detections whose center is outside the FOV circle.
+                float fdx = xCenter - fovCenterX;
+                float fdy = yCenter - fovCenterY;
+                if (fdx * fdx + fdy * fdy > fovCircleRadiusSq) continue;
+
                 // Discard detections whose center falls inside the bottom viewmodel-exclusion band.
                 if (viewmodelExclusionFraction > 0f && yCenter >= viewmodelExclusionY) continue;
 
@@ -122,7 +135,46 @@ namespace Aimmy2.AILogic
                 });
             }
 
-            return predictions;
+            // NMS: remove duplicate boxes for the same target (sorted by confidence, suppress overlapping same-class boxes)
+            return ApplyNms(predictions, nmsIouThreshold: 0.45f);
+        }
+
+        private static List<Prediction> ApplyNms(List<Prediction> predictions, float nmsIouThreshold)
+        {
+            if (predictions.Count <= 1) return predictions;
+
+            predictions.Sort((a, b) => b.Confidence.CompareTo(a.Confidence));
+            var keep = new List<Prediction>(predictions.Count);
+            var suppressed = new bool[predictions.Count];
+
+            for (int i = 0; i < predictions.Count; i++)
+            {
+                if (suppressed[i]) continue;
+                keep.Add(predictions[i]);
+                for (int j = i + 1; j < predictions.Count; j++)
+                {
+                    if (suppressed[j]) continue;
+                    if (predictions[i].ClassId == predictions[j].ClassId &&
+                        ComputeIoU(predictions[i].Rectangle, predictions[j].Rectangle) >= nmsIouThreshold)
+                    {
+                        suppressed[j] = true;
+                    }
+                }
+            }
+
+            return keep;
+        }
+
+        private static float ComputeIoU(RectangleF a, RectangleF b)
+        {
+            float x1 = Math.Max(a.Left, b.Left);
+            float y1 = Math.Max(a.Top, b.Top);
+            float x2 = Math.Min(a.Right, b.Right);
+            float y2 = Math.Min(a.Bottom, b.Bottom);
+            if (x2 <= x1 || y2 <= y1) return 0f;
+            float intersection = (x2 - x1) * (y2 - y1);
+            float union = a.Width * a.Height + b.Width * b.Height - intersection;
+            return union > 0 ? intersection / union : 0f;
         }
 
         internal static int ResolveSelectedClassId(IReadOnlyDictionary<int, string> modelClasses, string selectedClass)

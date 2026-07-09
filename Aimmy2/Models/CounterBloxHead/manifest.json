@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "id": "counterblox-head",
+  "name": "CounterBlox (Head+Player)",
+  "version": "1.0.0",
+  "input_width": 640,
+  "input_height": 640,
+  "default_confidence": 0.35,
+  "aim_point_fraction": 0.5,
+  "classes": [
+    { "id": 0, "name": "head", "semantic_role": "Enemy" },
+    { "id": 1, "name": "player", "semantic_role": "Player" }
+  ]
+}

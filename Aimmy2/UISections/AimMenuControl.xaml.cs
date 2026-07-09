@@ -686,7 +686,7 @@ namespace Aimmy2.Controls
 
             _gamepadDiagnosticsTimer = new DispatcherTimer
             {
-                Interval = TimeSpan.FromMilliseconds(250),
+                Interval = TimeSpan.FromMilliseconds(100),
             };
             _gamepadDiagnosticsTimer.Tick += (s, e) => UpdateGamepadDiagnostics();
             _gamepadDiagnosticsTimer.Start();
@@ -708,10 +708,11 @@ namespace Aimmy2.Controls
                 return;
             }
 
+            string acqBurst = manager.AcquisitionFramesRemaining > 0 ? $"  BURST:{manager.AcquisitionFramesRemaining}" : "";
             _gamepadDiagnosticsLabel.Content =
                 $"Capture FPS: {manager.CaptureFps:F1}  Inference: {manager.InferenceMs:F1}ms  Frame Age: {manager.FrameAge:F1}ms\n" +
                 $"Players: {manager.PlayerDetections}  Enemies: {manager.EnemyDetections}  Friendlies: {manager.FriendlyDetections}  Tracks: {manager.ActiveTracks}\n" +
-                $"Selected: #{(manager.SelectedTrackId?.ToString() ?? "-")} ({manager.SelectedClass ?? "-"})  ErrX: {manager.ErrorX:F2}  ErrY: {manager.ErrorY:F2}\n" +
+                $"Selected: #{(manager.SelectedTrackId?.ToString() ?? "-")} ({manager.SelectedClass ?? "-"})  ErrX: {manager.ErrorX:F2}  ErrY: {manager.ErrorY:F2}{acqBurst}\n" +
                 $"TargetVel: ({manager.TargetVelocityX:F1}, {manager.TargetVelocityY:F1})  RX: {manager.RX:F2}  RY: {manager.RY:F2}";
         }
 

@@ -30,6 +30,9 @@
     <Platforms>AnyCPU;x64</Platforms>	  <Product></Product>
     <Title></Title>
     <AssemblyName>YmmiaV2</AssemblyName>
+    <Version>2.1.0</Version>
+    <FileVersion>2.1.0.0</FileVersion>
+    <AssemblyVersion>2.1.0.0</AssemblyVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <SignAssembly>False</SignAssembly>
     <RunPostBuildEvent>OnBuildSuccess</RunPostBuildEvent>
@@ -86,6 +89,9 @@
 
 	<ItemGroup>
 		<Content Include="Models\**\*.json">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</Content>
+		<Content Include="Models\**\*.onnx">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 		</Content>
 	</ItemGroup>

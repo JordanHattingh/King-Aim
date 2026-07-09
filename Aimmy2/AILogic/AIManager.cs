@@ -131,6 +131,11 @@ namespace Aimmy2.AILogic
         private long _gamepadFrameCounter;
         private DateTime _lastGamepadUpdate = DateTime.UtcNow;
 
+        // Auto-confidence calibration: rolling window of detection counts per frame.
+        // Nudges MinimumConfidence up when too many boxes survive, down when too few.
+        private readonly Queue<int> _detectionCountWindow = new();
+        private const int DetectionWindowSize = 60;
+
         public TargetMode GamepadTargetMode { get; set; } = TargetMode.EnemyOnly;
         public SemanticRole GamepadRoleFilter { get; set; } = SemanticRole.Enemy;
         public int? GamepadFixedTrackId { get; set; }
@@ -153,6 +158,7 @@ namespace Aimmy2.AILogic
         public float TargetVelocityY { get; private set; }
         public float RX { get; private set; }
         public float RY { get; private set; }
+        public int AcquisitionFramesRemaining => _gamepadAssistController.AcquisitionFramesRemaining;
 
         public bool GamepadConnected => _gamepadOutput?.IsConnected ?? false;
 
@@ -1008,7 +1014,10 @@ namespace Aimmy2.AILogic
             // input before inference — real optical zoom, not just a post-hoc detection filter.
             // A smaller real capture means a distant/small target occupies proportionally more
             // of the pixels the model actually sees.
-            bool useDynamicFov = AimSettings.DynamicFovEnabled && InputBindingManager.IsHoldingBinding("Dynamic FOV Keybind");
+            // Optical zoom: when DynamicFov is enabled, always use the smaller capture region — no keybind required.
+            // Capturing fewer real pixels and upscaling to IMAGE_SIZE means far/small targets occupy
+            // proportionally more of the model's input, dramatically improving detection at range.
+            bool useDynamicFov = AimSettings.DynamicFovEnabled;
             int captureSize = IMAGE_SIZE;
             if (useDynamicFov)
             {
@@ -1041,7 +1050,7 @@ namespace Aimmy2.AILogic
                 {
                     using (Benchmark("ZoomResize"))
                     {
-                        resizedFrame = new Bitmap(frame, new System.Drawing.Size(IMAGE_SIZE, IMAGE_SIZE));
+                        resizedFrame = LetterboxResize(frame, IMAGE_SIZE);
                     }
                     modelInputFrame = resizedFrame;
                 }
@@ -1235,9 +1244,31 @@ namespace Aimmy2.AILogic
             _lastGamepadUpdate = now;
             _gamepadFrameCounter++;
 
+            // Auto-confidence calibration: keep a rolling window of per-frame detection counts.
+            // If the average is consistently high (>5) the threshold is too low — too many false
+            // positives bleed through. If consistently low (<1) the threshold is too aggressive.
+            // Nudge MinimumConfidence by 0.01 per frame in the appropriate direction.
+            _detectionCountWindow.Enqueue(predictions.Count);
+            while (_detectionCountWindow.Count > DetectionWindowSize)
+                _detectionCountWindow.Dequeue();
+
+            if (_detectionCountWindow.Count == DetectionWindowSize)
+            {
+                double avgDetections = _detectionCountWindow.Average();
+                // MinimumConfidence is derived from the "AI Minimum Confidence" slider (0-100).
+                // Write back through the dictionary so the UI stays in sync.
+                double confNow = AimSettings.MinimumConfidence;
+                if (avgDetections > 5.0 && confNow < 0.65)
+                    Class.Dictionary.sliderSettings["AI Minimum Confidence"] =
+                        Math.Round((confNow + 0.01) * 100.0, 0);
+                else if (avgDetections < 1.0 && confNow > 0.15)
+                    Class.Dictionary.sliderSettings["AI Minimum Confidence"] =
+                        Math.Round((confNow - 0.01) * 100.0, 0);
+            }
+
             _gamepadAssistController.Gain = (float)AimSettings.GamepadAssistStrength;
             double smoothness = Math.Clamp(AimSettings.GamepadAssistSmoothness, 0.1, 1.0);
-            _gamepadAssistController.MaxSlewRate = (float)(1.0 / smoothness) * 4.0f;
+            _gamepadAssistController.MaxSlewRate = (float)(1.0 / smoothness) * 8.0f;
             GamepadAssistEnabled = AimSettings.GamepadAssist;
 
             Dictionary<int, SemanticRole> classRoles = _activeManifest?.BuildClassRoleMap()
@@ -1253,13 +1284,16 @@ namespace Aimmy2.AILogic
             var screenCenter = new PointF(IMAGE_SIZE / 2f, IMAGE_SIZE / 2f);
             float normalizationRadius = IMAGE_SIZE / 2f;
 
+            float aimPointFraction = _activeManifest?.AimPointFraction ?? 0.25f;
+
             var selection = _targetSelector.Select(
                 tracks,
                 GamepadTargetMode,
                 GamepadRoleFilter,
                 GamepadFixedTrackId,
                 screenCenter,
-                normalizationRadius);
+                normalizationRadius,
+                aimPointFraction);
 
             SelectedTrackId = selection.SelectedTrack?.TrackId;
             SelectedClass = selection.SelectedTrack?.ClassName;
@@ -1280,9 +1314,22 @@ namespace Aimmy2.AILogic
                 selection.TargetVelocityY,
                 confidence,
                 observationAge,
-                dtSeconds);
+                dtSeconds,
+                trackId: selection.SelectedTrack?.TrackId);
 
             PhysicalGamepadState physicalState = _physicalGamepadReader.Read(PhysicalGamepadIndex);
+
+            // RT-triggered recoil compensation: when the player is firing (right trigger held),
+            // add a small upward correction to counteract muzzle climb. Scales with trigger depth
+            // so partial pulls get proportional help. Value is negative Y because up = negative Y.
+            const float RecoilStrength = 0.12f;
+            const float RecoilTriggerThreshold = 0.15f;
+            if (physicalState.Connected && physicalState.RightTrigger > RecoilTriggerThreshold)
+            {
+                float recoilScale = (physicalState.RightTrigger - RecoilTriggerThreshold) / (1f - RecoilTriggerThreshold);
+                assistRy -= RecoilStrength * recoilScale;
+                assistRy = Math.Clamp(assistRy, -1f, 1f);
+            }
 
             var (rx, ry) = StickBlender.Blend(
                 physicalState.Connected ? physicalState.RightStickX : 0f,

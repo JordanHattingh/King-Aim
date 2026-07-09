@@ -29,6 +29,12 @@ namespace Aimmy2.AILogic
         public int InputHeight { get; set; }
         public List<ModelClassEntry> Classes { get; set; } = new();
         public float DefaultConfidence { get; set; } = 0.5f;
+        /// <summary>
+        /// Vertical fraction of the bounding box at which to place the aim point.
+        /// 0.0 = top of box, 0.5 = center, 1.0 = bottom.
+        /// Full-body models: 0.25 (head/chest). Head-only models: 0.5 (dead center).
+        /// </summary>
+        public float AimPointFraction { get; set; } = 0.25f;
 
         private static readonly JsonSerializerOptions SerializerOptions = new()
         {

@@ -1,0 +1,12 @@
+{
+  "schema_version": "1",
+  "id": "cs2-5k",
+  "name": "Counter-Strike 2 (5K)",
+  "version": "1.0.0",
+  "input_width": 640,
+  "input_height": 640,
+  "default_confidence": 0.35,
+  "classes": [
+    { "id": 0, "name": "enemy", "semantic_role": "Enemy" }
+  ]
+}

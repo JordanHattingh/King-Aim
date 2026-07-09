@@ -181,5 +181,28 @@ namespace AILogic
                 image.UnlockBits(bmpData);
             }
         }
+
+        /// <summary>
+        /// Resize <paramref name="source"/> into a square canvas of <paramref name="targetSize"/> pixels
+        /// while preserving the original aspect ratio. Padding rows/columns are filled with mid-gray (114)
+        /// — the same value used by Ultralytics letterboxing, which the model was trained on.
+        /// Stretch-resize distorts object proportions and hurts detection accuracy for non-square inputs.
+        /// </summary>
+        public static Bitmap LetterboxResize(Bitmap source, int targetSize)
+        {
+            float scale = Math.Min((float)targetSize / source.Width, (float)targetSize / source.Height);
+            int scaledW = (int)(source.Width * scale);
+            int scaledH = (int)(source.Height * scale);
+            int offsetX = (targetSize - scaledW) / 2;
+            int offsetY = (targetSize - scaledH) / 2;
+
+            var result = new Bitmap(targetSize, targetSize, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using var g = System.Drawing.Graphics.FromImage(result);
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
+            // Fill with mid-gray matching YOLOv8 letterbox padding color.
+            g.Clear(System.Drawing.Color.FromArgb(114, 114, 114));
+            g.DrawImage(source, offsetX, offsetY, scaledW, scaledH);
+            return result;
+        }
     }
 }

@@ -75,7 +75,7 @@ namespace Other
             if (ModelListBox.SelectedItem == null) return;
 
             string selectedModel = ModelListBox.SelectedItem.ToString()!;
-            string modelPath = Path.Combine("bin/models", selectedModel);
+            string modelPath = ResolveModelPath(selectedModel);
 
             if (Dictionary.lastLoadedModel == selectedModel || !ModelOperationLock.Wait(0))
                 return;
@@ -184,7 +184,7 @@ namespace Other
             if (previousModel == "N/A")
                 return false;
 
-            string previousModelPath = Path.Combine("bin/models", previousModel);
+            string previousModelPath = ResolveModelPath(previousModel);
             if (!File.Exists(previousModelPath))
                 return false;
 
@@ -276,28 +276,89 @@ namespace Other
             }
         }
 
+        // Holds display-name → full-path mappings built by LoadModelsIntoListBox.
+        private readonly Dictionary<string, string> _modelPathByDisplayName = new();
+
         public void LoadModelsIntoListBox(object? sender, FileSystemEventArgs? e)
         {
             if (!InQuittingState)
             {
                 Application.Current.Dispatcher.Invoke(() =>
                 {
-                    string[] onnxFiles = Directory.GetFiles("bin/models", "*.onnx");
+                    _modelPathByDisplayName.Clear();
                     ModelListBox.Items.Clear();
 
-                    foreach (string filePath in onnxFiles)
+                    // ── flat layout: bin/models/*.onnx ──────────────────────────────
+                    if (Directory.Exists("bin/models"))
                     {
-                        ModelListBox.Items.Add(Path.GetFileName(filePath));
+                        foreach (string filePath in Directory.GetFiles("bin/models", "*.onnx"))
+                        {
+                            string displayName = Path.GetFileName(filePath);
+                            if (!_modelPathByDisplayName.ContainsKey(displayName))
+                            {
+                                _modelPathByDisplayName[displayName] = filePath;
+                                ModelListBox.Items.Add(displayName);
+                            }
+                        }
+                    }
+
+                    // ── package layout: Models/<Name>/model.onnx ────────────────────
+                    string packagesRoot = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Models");
+                    if (Directory.Exists(packagesRoot))
+                    {
+                        foreach (string dir in Directory.GetDirectories(packagesRoot))
+                        {
+                            string onnxPath = Path.Combine(dir, "model.onnx");
+                            if (!File.Exists(onnxPath)) continue;
+
+                            // Try to read a friendly name from manifest.json
+                            string displayName = Path.GetFileName(dir);
+                            string manifestPath = Path.Combine(dir, "manifest.json");
+                            if (File.Exists(manifestPath))
+                            {
+                                try
+                                {
+                                    string json = File.ReadAllText(manifestPath);
+                                    using var doc = System.Text.Json.JsonDocument.Parse(json);
+                                    if (doc.RootElement.TryGetProperty("name", out var nameProp))
+                                    {
+                                        string? friendlyName = nameProp.GetString();
+                                        if (!string.IsNullOrWhiteSpace(friendlyName))
+                                            displayName = friendlyName;
+                                    }
+                                }
+                                catch { }
+                            }
+
+                            // Avoid collisions with flat-layout names
+                            string uniqueName = displayName;
+                            int suffix = 2;
+                            while (_modelPathByDisplayName.ContainsKey(uniqueName))
+                                uniqueName = $"{displayName} ({suffix++})";
+
+                            _modelPathByDisplayName[uniqueName] = onnxPath;
+                            ModelListBox.Items.Add(uniqueName);
+                        }
                     }
 
                     if (ModelListBox.Items.Count > 0)
                     {
                         string? lastLoadedModel = Dictionary.lastLoadedModel;
-                        if (lastLoadedModel != "N/A" && ModelListBox.Items.Contains(lastLoadedModel)) { ModelListBox.SelectedItem = lastLoadedModel; }
+                        if (lastLoadedModel != "N/A" && ModelListBox.Items.Contains(lastLoadedModel))
+                            ModelListBox.SelectedItem = lastLoadedModel;
                         SelectedModelNotifier.Content = $"Loaded Model: {lastLoadedModel}";
                     }
                 });
             }
+        }
+
+        // Resolves the full path for a display name coming from ModelListBox.
+        internal string ResolveModelPath(string displayName)
+        {
+            if (_modelPathByDisplayName.TryGetValue(displayName, out string? path))
+                return path;
+            // Legacy fallback: flat layout assumed
+            return Path.Combine("bin/models", displayName);
         }
 
         public void LoadConfigsIntoListBox(object? sender, FileSystemEventArgs? e)
