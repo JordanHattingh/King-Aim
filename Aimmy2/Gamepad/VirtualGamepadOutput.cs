@@ -46,6 +46,31 @@ namespace Aimmy2.Gamepad
             }
         }
 
+        public void SetFullState(PhysicalGamepadState physicalState, float rx, float ry)
+        {
+            if (!IsConnected || _controller == null)
+                return;
+
+            try
+            {
+                if (physicalState.Connected)
+                {
+                    _controller.SetAxisValue(Xbox360Axis.LeftThumbX, MapAxis(physicalState.LeftStickX));
+                    _controller.SetAxisValue(Xbox360Axis.LeftThumbY, MapAxis(physicalState.LeftStickY));
+                    _controller.SetSliderValue(Xbox360Slider.LeftTrigger, MapTrigger(physicalState.LeftTrigger));
+                    _controller.SetSliderValue(Xbox360Slider.RightTrigger, MapTrigger(physicalState.RightTrigger));
+                    _controller.SetButtonsFull(physicalState.Buttons);
+                }
+                _controller.SetAxisValue(Xbox360Axis.RightThumbX, MapAxis(rx));
+                _controller.SetAxisValue(Xbox360Axis.RightThumbY, MapAxis(ry));
+                _controller.SubmitReport();
+            }
+            catch
+            {
+                IsConnected = false;
+            }
+        }
+
         public void SetRightStick(float rx, float ry)
         {
             if (!IsConnected || _controller == null)
@@ -53,15 +78,12 @@ namespace Aimmy2.Gamepad
 
             try
             {
-                short x = MapAxis(rx);
-                short y = MapAxis(ry);
-                _controller.SetAxisValue(Xbox360Axis.RightThumbX, x);
-                _controller.SetAxisValue(Xbox360Axis.RightThumbY, y);
+                _controller.SetAxisValue(Xbox360Axis.RightThumbX, MapAxis(rx));
+                _controller.SetAxisValue(Xbox360Axis.RightThumbY, MapAxis(ry));
                 _controller.SubmitReport();
             }
             catch
             {
-                // Never throw from the vision/output hot path if the virtual device drops.
                 IsConnected = false;
             }
         }

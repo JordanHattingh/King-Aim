@@ -3,13 +3,16 @@ namespace Aimmy2.Gamepad
     public interface IGamepadOutput : IDisposable
     {
         bool IsConnected { get; }
-        void SetRightStick(float rx, float ry);
 
         /// <summary>
-        /// Passes through everything except the right stick from a physical controller reading,
-        /// so the game only ever needs to bind to the virtual pad while the player keeps full
-        /// control of movement, shooting, and buttons. Call once per frame alongside SetRightStick.
+        /// Atomically applies the full controller state — passthrough inputs from the physical
+        /// pad plus the AI-computed right-stick override — in a single USB report. Use this
+        /// instead of calling SetPassthroughState + SetRightStick separately, which produces
+        /// two USB packets per frame and can cause button-state jitter between them.
         /// </summary>
+        void SetFullState(PhysicalGamepadState physicalState, float rx, float ry);
+
+        void SetRightStick(float rx, float ry);
         void SetPassthroughState(PhysicalGamepadState physicalState);
 
         void Connect();

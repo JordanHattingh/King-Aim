@@ -1318,7 +1318,10 @@ namespace Aimmy2.AILogic
             var screenCenter = new PointF(IMAGE_SIZE / 2f, IMAGE_SIZE / 2f);
             float normalizationRadius = IMAGE_SIZE / 2f;
 
-            float aimPointFraction = _activeManifest?.AimPointFraction ?? 0.25f;
+            // Use the Y Offset % slider so gamepad and mouse paths aim at the same spot.
+            // Manifest can pin a fraction for models that need it (e.g. head-only).
+            float aimPointFraction = _activeManifest?.AimPointFraction
+                ?? (float)(AimSettings.YOffsetPercent / 100.0);
 
             var selection = _targetSelector.Select(
                 tracks,
@@ -1357,12 +1360,13 @@ namespace Aimmy2.AILogic
             // RT-triggered recoil compensation: when the player is firing (right trigger held),
             // add a small upward correction to counteract muzzle climb. Scales with trigger depth
             // so partial pulls get proportional help. Value is negative Y because up = negative Y.
-            const float RecoilStrength = 0.12f;
+            // Strength is normalised: RecoilStrengthMouse (pixels/frame) ÷ 25 maps to stick space.
             const float RecoilTriggerThreshold = 0.15f;
             if (physicalState.Connected && physicalState.RightTrigger > RecoilTriggerThreshold)
             {
+                float recoilStrengthStick = Math.Clamp(_recoilCompensator.Strength / 25f, 0f, 0.5f);
                 float recoilScale = (physicalState.RightTrigger - RecoilTriggerThreshold) / (1f - RecoilTriggerThreshold);
-                assistRy -= RecoilStrength * recoilScale;
+                assistRy -= recoilStrengthStick * recoilScale;
                 assistRy = Math.Clamp(assistRy, -1f, 1f);
             }
 
@@ -1377,20 +1381,19 @@ namespace Aimmy2.AILogic
 
             if (GamepadAssistEnabled && _gamepadOutput != null)
             {
-                // Passthrough must run every frame the virtual pad is active, regardless of whether
-                // a target is locked, or the player loses movement/shoot/buttons the instant the
-                // AI has nothing to aim at.
-                _gamepadOutput.SetPassthroughState(physicalState);
-                _gamepadOutput.SetRightStick(rx, ry);
+                // Single atomic report: passthrough + right-stick override in one USB packet.
+                // Previously two separate SubmitReport() calls caused per-frame button-state
+                // jitter between the two packets at the game's input layer.
+                _gamepadOutput.SetFullState(physicalState, rx, ry);
             }
 
             // ── Mouse aim assist ──────────────────────────────────────────────────────
-            // Runs through the same PID error signal as the gamepad path but drives the
-            // real mouse cursor instead of (or in addition to) virtual stick output.
-            // Active whenever MouseAimEnabled is set and the aim keybind is held (or
-            // ConstantAiTracking is on). This works for both mouse+KB and controller
-            // players because it moves the underlying OS cursor.
+            // Only active when AimAssist is OFF — when AimAssist is ON, HandleAim() runs
+            // MouseManager.MoveCrosshair() and both paths firing simultaneously would
+            // double-move the cursor. With AimAssist OFF, this provides a lightweight
+            // alternative mouse-aim path using the gamepad PID error signal.
             bool mouseAimActive = MouseAimEnabled &&
+                !AimSettings.AimAssist &&
                 (AimSettings.ConstantAiTracking ||
                  InputBindingManager.IsHoldingBinding("Aim Keybind") ||
                  InputBindingManager.IsHoldingBinding("Second Aim Keybind"));
