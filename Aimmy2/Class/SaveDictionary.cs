@@ -7,6 +7,22 @@ namespace Class
 {
     internal class SaveDictionary
     {
+        // All user-writable data lives under %AppData%\King Aim so the app works correctly
+        // when installed to C:\Program Files\ (write-protected by Windows UAC).
+        private static readonly string AppDataDir =
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "King Aim");
+
+        /// <summary>
+        /// Resolves a relative path like "bin\colors.cfg" to the writable AppData folder.
+        /// Absolute paths are returned unchanged so callers that already use full paths still work.
+        /// </summary>
+        public static string ResolvePath(string path)
+        {
+            if (Path.IsPathRooted(path))
+                return path;
+            return Path.Combine(AppDataDir, path);
+        }
+
         // Ensure all required directories exist at startup
         public static void EnsureDirectoriesExist()
         {
@@ -20,21 +36,24 @@ namespace Class
 
             foreach (var dir in requiredDirectories)
             {
-                if (!Directory.Exists(dir))
+                string fullDir = ResolvePath(dir);
+                if (!Directory.Exists(fullDir))
                 {
                     try
                     {
-                        Directory.CreateDirectory(dir);
+                        Directory.CreateDirectory(fullDir);
                     }
                     catch (Exception ex)
                     {
-                        LogManager.Log(LogManager.LogLevel.Error, $"Failed to create directory {dir}: {ex.Message}", true);
+                        LogManager.Log(LogManager.LogLevel.Error, $"Failed to create directory {fullDir}: {ex.Message}", true);
                     }
                 }
             }
         }
+
         public static void WriteJSON(Dictionary<string, dynamic> dictionary, string path = "bin\\configs\\Default.cfg", string SuggestedModel = "", string ExtraStrings = "")
         {
+            path = ResolvePath(path);
             try
             {
                 // Ensure the directory exists
@@ -62,6 +81,7 @@ namespace Class
 
         public static void LoadJSON(Dictionary<string, dynamic> dictionary, string path = "bin\\configs\\Default.cfg", bool strict = true)
         {
+            path = ResolvePath(path);
             try
             {
                 // Ensure the directory exists before checking for the file

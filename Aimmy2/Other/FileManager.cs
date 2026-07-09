@@ -47,18 +47,24 @@ namespace Other
 
         private void CheckForRequiredFolders()
         {
+            // User-writable data goes to AppData; model/image/label folders stay beside the exe.
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            string[] dirs = ["bin\\models", "bin\\images", "bin\\labels", "bin\\configs"];
+            string[] appDirs = ["bin\\configs", "bin\\images", "bin\\labels"];
+            string[] exeDirs = ["bin\\models"];
 
             try
             {
-                foreach (string dir in dirs)
+                foreach (string dir in appDirs)
+                {
+                    string fullPath = Class.SaveDictionary.ResolvePath(dir);
+                    if (!Directory.Exists(fullPath))
+                        Directory.CreateDirectory(fullPath);
+                }
+                foreach (string dir in exeDirs)
                 {
                     string fullPath = Path.Combine(baseDir, dir);
                     if (!Directory.Exists(fullPath))
-                    {
                         Directory.CreateDirectory(fullPath);
-                    }
                 }
             }
             catch (Exception ex)
@@ -288,10 +294,11 @@ namespace Other
                     _modelPathByDisplayName.Clear();
                     ModelListBox.Items.Clear();
 
-                    // ── flat layout: bin/models/*.onnx ──────────────────────────────
-                    if (Directory.Exists("bin/models"))
+                    // ── flat layout: bin/models/*.onnx (beside the exe) ────────────
+                    string flatModelsDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "models");
+                    if (Directory.Exists(flatModelsDir))
                     {
-                        foreach (string filePath in Directory.GetFiles("bin/models", "*.onnx"))
+                        foreach (string filePath in Directory.GetFiles(flatModelsDir, "*.onnx"))
                         {
                             string displayName = Path.GetFileName(filePath);
                             if (!_modelPathByDisplayName.ContainsKey(displayName))
@@ -357,8 +364,8 @@ namespace Other
         {
             if (_modelPathByDisplayName.TryGetValue(displayName, out string? path))
                 return path;
-            // Legacy fallback: flat layout assumed
-            return Path.Combine("bin/models", displayName);
+            // Legacy fallback: flat layout assumed (beside the exe)
+            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "models", displayName);
         }
 
         public void LoadConfigsIntoListBox(object? sender, FileSystemEventArgs? e)
@@ -367,7 +374,7 @@ namespace Other
             {
                 Application.Current.Dispatcher.Invoke(() =>
                 {
-                    string[] configFiles = Directory.GetFiles("bin/configs", "*.cfg");
+                    string[] configFiles = Directory.GetFiles(Class.SaveDictionary.ResolvePath("bin\\configs"), "*.cfg");
                     ConfigListBox.Items.Clear();
 
                     foreach (string filePath in configFiles)

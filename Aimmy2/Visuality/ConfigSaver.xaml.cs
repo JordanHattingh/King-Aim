@@ -98,7 +98,7 @@ namespace Visuality
 
         private void SaveButton_Click(object sender, RoutedEventArgs e)
         {
-            if (!File.Exists($"bin/configs/{ConfigNameTextbox.Text}.cfg") ||
+            if (!File.Exists(SaveDictionary.ResolvePath($"bin\\configs\\{ConfigNameTextbox.Text}.cfg")) ||
                 MessageBox.Show("A config already exists with the same name, would you like to overwrite it?",
                     $"{Title} - Configuration Saver", MessageBoxButton.YesNo) == MessageBoxResult.Yes)
             {

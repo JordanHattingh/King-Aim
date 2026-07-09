@@ -9,7 +9,7 @@ namespace Other
     internal static class PerformanceHelperState
     {
         private const int CurrentPromptVersion = 1;
-        private const string StatePath = "bin\\performance-helper.cfg";
+        private static readonly string StatePath = SaveDictionary.ResolvePath("bin\\performance-helper.cfg");
 
         private static readonly Dictionary<string, dynamic> State = new();
 
