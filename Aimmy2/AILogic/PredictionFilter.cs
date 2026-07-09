@@ -20,8 +20,16 @@ namespace Aimmy2.AILogic
             float fovMaxY,
             float viewmodelExclusionFraction = 0f,
             PointF? cursorLocalPosition = null,
-            float cursorExclusionRadius = 0f)
+            float cursorExclusionRadius = 0f,
+            float captureToModelScale = 1f)
         {
+            // When the actual captured screen region is smaller than the model's input size
+            // (true optical zoom: capture fewer real pixels, then upscale to imageSize before
+            // inference), model-space coordinates (0..imageSize) no longer match real screen
+            // pixels 1:1. captureToModelScale = capturedPixels / imageSize converts model-space
+            // distances back to real screen-pixel distances for ScreenCenterX/Y and Rectangle,
+            // which mouse-aim, the overlay, and the gamepad track/selection pipeline all consume
+            // as if they were plain screen pixels.
             // First-person viewmodels (own gun/hands) almost always render in the bottom-center
             // of the screen and can be misclassified as an enemy by detectors not trained with
             // viewmodel negatives. viewmodelExclusionFraction (0..1) is the portion of the capture
@@ -94,16 +102,23 @@ namespace Aimmy2.AILogic
                     if (dx * dx + dy * dy <= cursorExclusionRadiusSq) continue;
                 }
 
+                float realX = xMin * captureToModelScale;
+                float realY = yMin * captureToModelScale;
+                float realWidth = width * captureToModelScale;
+                float realHeight = height * captureToModelScale;
+                float realCenterX = xCenter * captureToModelScale;
+                float realCenterY = yCenter * captureToModelScale;
+
                 predictions.Add(new Prediction
                 {
-                    Rectangle = new RectangleF(xMin, yMin, width, height),
+                    Rectangle = new RectangleF(realX, realY, realWidth, realHeight),
                     Confidence = bestConfidence,
                     ClassId = bestClassId,
                     ClassName = modelClasses.GetValueOrDefault(bestClassId, $"Class_{bestClassId}"),
                     CenterXTranslated = xCenter / imageSize,
                     CenterYTranslated = yCenter / imageSize,
-                    ScreenCenterX = detectionBox.Left + xCenter,
-                    ScreenCenterY = detectionBox.Top + yCenter
+                    ScreenCenterX = detectionBox.Left + realCenterX,
+                    ScreenCenterY = detectionBox.Top + realCenterY
                 });
             }
 

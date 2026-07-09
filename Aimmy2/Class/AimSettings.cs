@@ -44,6 +44,7 @@ namespace Aimmy2.Class
         public static double GamepadAssistSmoothness => GetSlider("Gamepad Assist Smoothness");
         public static double ViewmodelExclusion => GetSlider("Viewmodel Exclusion Zone") / 100.0;
         public static double CursorExclusionRadius => GetSlider("Cursor Exclusion Radius");
+        public static double DynamicFovSize => GetSlider("Dynamic FOV Size");
 
         public static bool AutoTrigger => GetToggle("Auto Trigger");
         public static bool ConstantAiTracking => GetToggle("Constant AI Tracking");
@@ -62,6 +63,7 @@ namespace Aimmy2.Class
         public static bool AutoLabelData => GetToggle("Auto Label Data");
         public static bool ThirdPersonSupport => GetToggle("Third Person Support");
         public static bool GamepadAssist => GetToggle("Gamepad Assist");
+        public static bool DynamicFovEnabled => GetToggle("Dynamic FOV");
 
         public static double GetSlider(string key) =>
             Convert.ToDouble(Dictionary.sliderSettings[key], CultureInfo.InvariantCulture);

@@ -1002,7 +1002,24 @@ namespace Aimmy2.AILogic
         private async Task<Prediction?> GetClosestPrediction(bool useMousePosition = true)
         {
             _lastPredictionRanInference = false;
-            Rectangle detectionBox = CreateDetectionBox(useMousePosition);
+
+            // When Dynamic FOV is enabled and its keybind is held, capture fewer real screen
+            // pixels (a smaller box) and upscale that bitmap to the model's fixed IMAGE_SIZE
+            // input before inference — real optical zoom, not just a post-hoc detection filter.
+            // A smaller real capture means a distant/small target occupies proportionally more
+            // of the pixels the model actually sees.
+            bool useDynamicFov = AimSettings.DynamicFovEnabled && InputBindingManager.IsHoldingBinding("Dynamic FOV Keybind");
+            int captureSize = IMAGE_SIZE;
+            if (useDynamicFov)
+            {
+                int dynamicSize = (int)AimSettings.DynamicFovSize;
+                // Clamp: must be a positive size no larger than the model's own input, or this
+                // would be an upscale-then-downscale no-op (or invalid inverse scale) instead of zoom.
+                captureSize = Math.Clamp(dynamicSize, 10, IMAGE_SIZE);
+            }
+            float captureToModelScale = captureSize / (float)IMAGE_SIZE;
+
+            Rectangle detectionBox = CreateDetectionBox(useMousePosition, captureSize);
 
             Bitmap? frame;
 
@@ -1015,9 +1032,20 @@ namespace Aimmy2.AILogic
 
             IDisposableReadOnlyCollection<DisposableNamedOnnxValue>? results = null;
             Tensor<float>? outputTensor = null;
+            Bitmap? resizedFrame = null;
 
             try
             {
+                Bitmap modelInputFrame = frame;
+                if (captureSize != IMAGE_SIZE)
+                {
+                    using (Benchmark("ZoomResize"))
+                    {
+                        resizedFrame = new Bitmap(frame, new System.Drawing.Size(IMAGE_SIZE, IMAGE_SIZE));
+                    }
+                    modelInputFrame = resizedFrame;
+                }
+
                 float[] inputArray;
                 using (Benchmark("BitmapToFloatArray"))
                 {
@@ -1028,7 +1056,7 @@ namespace Aimmy2.AILogic
                     inputArray = _reusableInputArray;
 
                     // Fill the reusable array
-                    BitmapToFloatArrayInPlace(frame, inputArray, IMAGE_SIZE);
+                    BitmapToFloatArrayInPlace(modelInputFrame, inputArray, IMAGE_SIZE);
                 }
 
                 // Reuse tensor and inputs - recreate if size changed
@@ -1062,7 +1090,11 @@ namespace Aimmy2.AILogic
                     return null;
                 }
 
-                // Calculate the FOV boundaries
+                // Calculate the FOV boundaries. Dynamic FOV zoom is applied earlier, at capture
+                // time (a smaller real screen region upscaled to IMAGE_SIZE) — this FOV filter
+                // stays independent of that and always uses the configured FOV Size against the
+                // resulting (possibly already-zoomed) model-space image, so the two effects don't
+                // compound into an unexpectedly tiny effective view.
                 float FovSize = (float)AimSettings.FovSize;
                 float fovMinX = (IMAGE_SIZE - FovSize) / 2.0f;
                 float fovMaxX = (IMAGE_SIZE + FovSize) / 2.0f;
@@ -1080,9 +1112,12 @@ namespace Aimmy2.AILogic
                     PointF? cursorLocalPosition = null;
                     if (DisplayManager.IsPointInCurrentDisplay(new System.Windows.Point(cursorScreenPos.X, cursorScreenPos.Y)))
                     {
+                        // Convert real-screen-relative-to-capture-box position into model-space
+                        // (0..IMAGE_SIZE) coordinates, matching the tensor's own xCenter/yCenter,
+                        // by dividing out the same capture-to-model scale applied to detections.
                         cursorLocalPosition = new PointF(
-                            cursorScreenPos.X - detectionBox.Left,
-                            cursorScreenPos.Y - detectionBox.Top);
+                            (cursorScreenPos.X - detectionBox.Left) / captureToModelScale,
+                            (cursorScreenPos.Y - detectionBox.Top) / captureToModelScale);
                     }
 
                     KDPredictions = PredictionFilter.CreatePredictions(
@@ -1100,7 +1135,8 @@ namespace Aimmy2.AILogic
                         fovMaxY,
                         (float)AimSettings.ViewmodelExclusion,
                         cursorLocalPosition,
-                        (float)AimSettings.CursorExclusionRadius);
+                        (float)AimSettings.CursorExclusionRadius,
+                        captureToModelScale);
                 }
 
                 using (Benchmark("GamepadAssistPipeline"))
@@ -1158,11 +1194,12 @@ namespace Aimmy2.AILogic
             {
                 // Always dispose the cloned frame to prevent memory leaks
                 frame.Dispose();
+                resizedFrame?.Dispose();
                 results?.Dispose();
             }
         }
 
-        private Rectangle CreateDetectionBox(bool useMousePosition = true)
+        private Rectangle CreateDetectionBox(bool useMousePosition = true, int? captureSizeOverride = null)
         {
             string detectionAreaType = AimSettings.DetectionAreaType;
             System.Drawing.Point mousePosition = default;
@@ -1182,7 +1219,7 @@ namespace Aimmy2.AILogic
 
             return CaptureTargetSelector.SelectDetectionBox(
                 detectionAreaType,
-                IMAGE_SIZE,
+                captureSizeOverride ?? IMAGE_SIZE,
                 displayBounds,
                 mousePosition,
                 mouseOnCurrentDisplay);
