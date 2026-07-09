@@ -109,6 +109,10 @@ namespace Class
         public AToggle? T_XAxisPercentageAdjustment { get; set; }
         public AToggle? T_YAxisPercentageAdjustment { get; set; }
 
+        // Gamepad Assist sliders
+        public ASlider? S_GamepadAssistStrength { get; set; }
+        public ASlider? S_GamepadAssistSmoothness { get; set; }
+
         // Theme Color Changer
         public ATitle? AT_ThemeColorWheel { get; set; }
         public AColorWheel? ThemeColorWheel { get; set; }

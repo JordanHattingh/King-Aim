@@ -1224,7 +1224,9 @@ namespace Aimmy2
                 ("AI Minimum Confidence", uiManager.S_AIMinimumConfidence, 50.0),
                 ("Kalman Lead Time", uiManager.S_KalmanLeadTime, 0.10),
                 ("WiseTheFox Lead Time", uiManager.S_WiseTheFoxLeadTime, 0.15),
-                ("Shalloe Lead Multiplier", uiManager.S_ShalloeLeadMultiplier, 3.0)
+                ("Shalloe Lead Multiplier", uiManager.S_ShalloeLeadMultiplier, 3.0),
+                ("Gamepad Assist Strength", uiManager.S_GamepadAssistStrength, 3.0),
+                ("Gamepad Assist Smoothness", uiManager.S_GamepadAssistSmoothness, 0.10)
             };
 
             ApplySliderValues(sliderConfigs, Dictionary.sliderSettings);
