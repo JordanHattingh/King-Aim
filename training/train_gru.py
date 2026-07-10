@@ -69,7 +69,8 @@ class TrackSequenceDataset(Dataset):
         self.norm = norm_constants
         self.augment = augment
         self.windows = []
-        for path in Path(data_dir).glob("*.json"):
+        # Only load GRU sequence files; calibration_samples.json has no "frames" key.
+        for path in Path(data_dir).glob("gru_sequences*.json"):
             with open(path) as f:
                 sessions = json.load(f)
             for track in sessions:
@@ -137,7 +138,7 @@ def temporal_loss(pred, target):
 def compute_norm_constants(data_dir):
     """Derive normalization stats from the dataset."""
     log_ws, log_hs, dts, ages = [], [], [], []
-    for path in Path(data_dir).glob("*.json"):
+    for path in Path(data_dir).glob("gru_sequences*.json"):
         with open(path) as f:
             sessions = json.load(f)
         for track in sessions:
