@@ -50,6 +50,9 @@ namespace Aimmy2.Controls
         private System.Windows.Controls.Label? _gamepadStatusLabel;
         private System.Windows.Controls.Label? _gamepadDiagnosticsLabel;
 
+        private DispatcherTimer? _neuralStatusTimer;
+        private System.Windows.Controls.Label? _neuralStatusLabel;
+
         public AimMenuControl()
         {
             InitializeComponent();
@@ -414,7 +417,43 @@ namespace Aimmy2.Controls
                         }
                     };
                 }, tooltip: "How much smoothing to apply. Lower = smoother but slower, higher = faster but jittery.")
-                .AddSeparator();
+                .AddSeparator()
+                .AddToggle("Detection Logging", tooltip:
+                    "Record detections and track sequences to runs/logs/ for training the GRU, " +
+                    "calibration, and movement neural networks.  A new session folder is created " +
+                    "automatically.  Disable to stop logging and flush data to disk.");
+
+            // Neural network status banner — shows which companion models are loaded and live.
+            _neuralStatusLabel = new System.Windows.Controls.Label
+            {
+                Content    = "Neural: No model loaded",
+                Foreground = System.Windows.Media.Brushes.LightGray,
+                FontSize   = 11,
+                FontFamily = new System.Windows.Media.FontFamily("Consolas, Courier New"),
+                Margin     = new Thickness(4, 2, 0, 2),
+            };
+            Predictions.Children.Add(_neuralStatusLabel);
+
+            _neuralStatusTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(500),
+            };
+            _neuralStatusTimer.Tick += (s, e) => UpdateNeuralStatusLabel();
+            _neuralStatusTimer.Start();
+        }
+
+        private void UpdateNeuralStatusLabel()
+        {
+            if (_neuralStatusLabel == null) return;
+            var manager = FileManager.AIManager;
+            if (manager == null)
+            {
+                _neuralStatusLabel.Content    = "Neural: No model loaded";
+                _neuralStatusLabel.Foreground = System.Windows.Media.Brushes.LightGray;
+                return;
+            }
+            _neuralStatusLabel.Content    = manager.NeuralStatusText;
+            _neuralStatusLabel.Foreground = System.Windows.Media.Brushes.LightGreen;
         }
 
         private void LoadTriggerBot()
@@ -772,6 +811,8 @@ namespace Aimmy2.Controls
             SaveMinimizeStatesToGlobal();
             _gamepadDiagnosticsTimer?.Stop();
             _gamepadDiagnosticsTimer = null;
+            _neuralStatusTimer?.Stop();
+            _neuralStatusTimer = null;
         }
 
         #endregion

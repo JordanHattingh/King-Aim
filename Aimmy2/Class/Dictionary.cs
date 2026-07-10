@@ -80,7 +80,8 @@ namespace Aimmy2.Class
             //--
             { "X Axis Percentage Adjustment", false },
             { "Y Axis Percentage Adjustment", false },
-            { "Gamepad Assist", true }
+            { "Gamepad Assist", true },
+            { "Detection Logging", false }
         };
 
         public static Dictionary<string, dynamic> minimizeState = new()

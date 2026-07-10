@@ -63,7 +63,8 @@ namespace Aimmy2.Class
         public static bool AutoLabelData => GetToggle("Auto Label Data");
         public static bool ThirdPersonSupport => GetToggle("Third Person Support");
         public static bool GamepadAssist => GetToggle("Gamepad Assist");
-        public static bool DynamicFovEnabled => GetToggle("Dynamic FOV");
+        public static bool DynamicFovEnabled   => GetToggle("Dynamic FOV");
+        public static bool DetectionLogging    => GetToggle("Detection Logging");
 
         public static double GetSlider(string key) =>
             Convert.ToDouble(Dictionary.sliderSettings[key], CultureInfo.InvariantCulture);

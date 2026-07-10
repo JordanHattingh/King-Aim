@@ -132,6 +132,13 @@ namespace Aimmy2.AILogic
         private readonly CaptureManager _captureManager = new();
         private readonly StickyAimSelector _stickyAimSelector = new();
 
+        // ── Training data logger ──────────────────────────────────────────────────
+        private readonly TrackLogger _trackLogger = new();
+        private const string LogsRoot = "runs/logs";
+
+        /// <summary>One-line summary of which neural networks are active. Refreshed each frame.</summary>
+        public string NeuralStatusText { get; private set; } = "No model loaded";
+
         // ── Neural companion models ────────────────────────────────────────────────
         // Loaded lazily after the primary detection model is ready, guided by the manifest.
         // Each falls back gracefully (raw conf / Kalman / Bezier) when not loaded.
@@ -1386,20 +1393,46 @@ namespace Aimmy2.AILogic
                         keypointCount);
                 }
 
-                // Confidence calibration: replace raw YOLO confidence with the MLP's
-                // calibrated estimate, which accounts for box size, position, and pose quality.
-                if (_calibrationMlp.IsLoaded && KDPredictions.Count > 0)
+                // Build calibration samples from raw confidence BEFORE overwriting it,
+                // then apply the calibration MLP.  Logging uses the raw value the model
+                // actually produced so training data reflects the true model output distribution.
+                if (KDPredictions.Count > 0)
                 {
                     float frameAgeMs = (float)FrameAge;
                     float imF = IMAGE_SIZE;
+
+                    List<CalibrationSampleInput>? logSamples = AimSettings.DetectionLogging
+                        ? new List<CalibrationSampleInput>(KDPredictions.Count) : null;
+
                     foreach (var p in KDPredictions)
                     {
                         float cx = (p.Rectangle.X + p.Rectangle.Width  * 0.5f) / imF;
                         float cy = (p.Rectangle.Y + p.Rectangle.Height * 0.5f) / imF;
                         float wn = p.Rectangle.Width  / imF;
                         float hn = p.Rectangle.Height / imF;
-                        p.Confidence = _calibrationMlp.Calibrate(
-                            p.Confidence, wn, hn, cx, cy, frameAgeMs, p.Keypoints);
+
+                        if (logSamples != null)
+                        {
+                            float pq = CalibrationMlp.ComputePoseQualityStatic(p.Keypoints);
+                            logSamples.Add(new CalibrationSampleInput
+                            {
+                                RawConf    = p.Confidence,
+                                WNorm      = wn, HNorm = hn,
+                                CxNorm     = cx, CyNorm = cy,
+                                FrameAgeMs = frameAgeMs,
+                                PoseQuality = pq,
+                            });
+                        }
+
+                        if (_calibrationMlp.IsLoaded)
+                            p.Confidence = _calibrationMlp.Calibrate(
+                                p.Confidence, wn, hn, cx, cy, frameAgeMs, p.Keypoints);
+                    }
+
+                    if (logSamples != null && logSamples.Count > 0)
+                    {
+                        _trackLogger.EnsureSessionActive(LogsRoot);
+                        _trackLogger.LogCalibrationSamples(logSamples);
                     }
                 }
 
@@ -1604,6 +1637,20 @@ namespace Aimmy2.AILogic
                     selection.SelectedTrack.BoundingBox.Height);
             }
 
+            // Track logger: detect expired tracks and flush their ring buffers to disk.
+            if (AimSettings.DetectionLogging)
+            {
+                _trackLogger.EnsureSessionActive(LogsRoot);
+                _trackLogger.SyncTracks(tracks);
+            }
+            else if (_trackLogger.IsActive)
+            {
+                _trackLogger.StopSession();
+            }
+
+            // Refresh the neural status banner shown in the UI diagnostics panel.
+            UpdateNeuralStatus();
+
             bool hasTarget = selection.SelectedTrack != null;
             int observationAge = hasTarget ? selection.SelectedTrack!.FramesSinceLastSeen : int.MaxValue;
             float confidence = hasTarget ? selection.SelectedTrack!.Confidence : 0f;
@@ -1691,6 +1738,20 @@ namespace Aimmy2.AILogic
             var (rcDx, rcDy) = _recoilCompensator.Update(isFiring, (float)(dtSeconds * 1000.0));
             if (rcDx != 0 || rcDy != 0)
                 _mouseAimOutput.ApplyRaw(rcDx, rcDy);
+        }
+
+        private void UpdateNeuralStatus()
+        {
+            string pose = _activeManifest?.IsPoseModel == true ? "Pose ✓" : "Pose ✗";
+            string gru  = _temporalPredictor.IsLoaded
+                ? (_gruAimHint.HasValue ? "GRU ✓" : "GRU (warm-up)")
+                : "GRU ✗";
+            string cal  = _calibrationMlp.IsLoaded ? "Cal ✓" : "Cal ✗";
+            string mov  = _movementMlp.IsLoaded    ? "Move ✓" : "Move ✗";
+            string log  = AimSettings.DetectionLogging
+                ? $"Log ✓ ({_trackLogger.TotalCalibrationSamples} det / {_trackLogger.TotalTracksFlushed} trk)"
+                : "Log ✗";
+            NeuralStatusText = $"{pose}   {gru}   {cal}   {mov}\n{log}";
         }
 
         private void UpdateDetectionBox(Prediction target, Rectangle detectionBox)
@@ -2230,6 +2291,9 @@ namespace Aimmy2.AILogic
             _movementMlp.Dispose();
             if (MouseManager.NeuralMovement == _movementMlp)
                 MouseManager.NeuralMovement = null;
+
+            // Flush any buffered training data to disk before exit
+            _trackLogger.Dispose();
         }
     }
 }

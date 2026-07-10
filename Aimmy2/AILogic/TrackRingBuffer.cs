@@ -78,6 +78,17 @@ namespace Aimmy2.AILogic
             }
         }
 
+        /// <summary>
+        /// Returns observations in oldest-first order.
+        /// Used by TrackLogger to serialise sequences for GRU training data.
+        /// </summary>
+        public IEnumerable<TrackObservation> GetSequence()
+        {
+            int oldest = _count < Capacity ? 0 : _head;
+            for (int i = 0; i < _count; i++)
+                yield return _buf[(oldest + i) % Capacity];
+        }
+
         public void Reset()
         {
             _head = 0;

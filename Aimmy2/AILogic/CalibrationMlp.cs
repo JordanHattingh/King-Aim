@@ -81,6 +81,8 @@ namespace Aimmy2.AILogic
             return Math.Clamp(cal, 0f, 1f);
         }
 
+        public static float ComputePoseQualityStatic(PlayerKeypoints? kpts) => ComputePoseQuality(kpts);
+
         private static float ComputePoseQuality(PlayerKeypoints? kpts)
         {
             if (kpts == null) return 0f;
