@@ -1,119 +1,137 @@
-"""
-King Aim — Manifest updater.
+"""King Aim model-bundle manifest updater (schema v2)."""
 
-After training the companion networks, run this to inject the trained ONNX paths
-and GRU norm constants into your model's manifest.json.
+from __future__ import annotations
 
-Usage (typical after a full training run):
-    python update_manifest.py \\
-        --manifest "Models/MyModel/manifest.json" \\
-        --gru      runs/gru/trajectory_gru.onnx \\
-        --gru-norm runs/gru/norm_constants.json \\
-        --cal      runs/calibration/calibration_mlp.onnx \\
-        --move     runs/movement/movement_mlp.onnx
-
-Paths in the manifest are stored relative to the manifest file's directory so
-the model bundle stays portable.
-
-If you only trained one network, omit the others — existing values are preserved.
-"""
-
-import json, os, shutil, argparse
+import argparse
+import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
 
+from contracts import (
+    CALIBRATION_FEATURE_SCHEMA,
+    GRU_NORM_FIELDS,
+    MOVEMENT_FEATURE_SCHEMA,
+    TEMPORAL_FEATURE_SCHEMA,
+)
 
-def rel(manifest_dir, onnx_path):
-    """Return a path relative to manifest_dir, or absolute if on a different drive."""
+
+def relative_path(manifest_dir: Path, model_path: Path) -> str:
     try:
-        return os.path.relpath(onnx_path, manifest_dir)
+        return os.path.relpath(model_path, manifest_dir)
     except ValueError:
-        return str(Path(onnx_path).resolve())
+        return str(model_path.resolve())
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Update manifest.json with trained companion models")
-    parser.add_argument("--manifest", required=True,
-                        help="Path to manifest.json to update")
-    parser.add_argument("--gru",      default=None,
-                        help="Path to trajectory_gru.onnx (output of train_gru.py)")
-    parser.add_argument("--gru-norm", default=None,
-                        help="Path to norm_constants.json (output of train_gru.py)")
-    parser.add_argument("--cal",      default=None,
-                        help="Path to calibration_mlp.onnx (output of train_calibration.py)")
-    parser.add_argument("--move",     default=None,
-                        help="Path to movement_mlp.onnx (output of train_movement.py)")
-    parser.add_argument("--copy",     action="store_true",
-                        help="Copy ONNX files into the manifest's directory instead of using relative paths")
+def atomic_write_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        backup = path.with_suffix(path.suffix + ".bak")
+        if path.exists():
+            shutil.copy2(path, backup)
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Update King Aim schema-v2 model manifest")
+    parser.add_argument("--manifest", required=True)
+    parser.add_argument("--gru")
+    parser.add_argument("--gru-norm")
+    parser.add_argument("--cal")
+    parser.add_argument("--move")
+    parser.add_argument("--copy", action="store_true")
+    parser.add_argument("--pose", action="store_true", help="Declare the vision model as a pose model")
+    parser.add_argument("--keypoint-count", type=int, default=4)
+    parser.add_argument(
+        "--keypoint-names",
+        default="head,neck,chest,hip",
+        help="Comma-separated keypoint names in exported channel order",
+    )
+    parser.add_argument(
+        "--keypoint-visibility-is-logit",
+        action="store_true",
+        help="Set only after raw PyTorch/ONNX parity proves exported visibility is a raw logit",
+    )
     args = parser.parse_args()
 
     manifest_path = Path(args.manifest).resolve()
     if not manifest_path.exists():
-        print(f"[ERROR] manifest.json not found: {manifest_path}")
-        return
-
+        raise SystemExit(f"manifest not found: {manifest_path}")
     manifest_dir = manifest_path.parent
+    with manifest_path.open(encoding="utf-8") as handle:
+        manifest = json.load(handle)
 
-    with open(manifest_path) as f:
-        manifest = json.load(f)
-
+    manifest["schema_version"] = "2"
     changed = False
 
-    def set_path(key, src):
+    def set_model_path(key: str, source_text: str | None) -> None:
         nonlocal changed
-        if src is None:
+        if source_text is None:
             return
-        src = Path(src).resolve()
-        if not src.exists():
-            print(f"[WARN] File not found, skipping: {src}")
-            return
+        source = Path(source_text).resolve()
+        if not source.exists():
+            raise FileNotFoundError(source)
         if args.copy:
-            dest = manifest_dir / src.name
-            shutil.copy2(src, dest)
-            manifest[key] = src.name
-            print(f"  Copied {src.name} → {dest}")
+            destination = manifest_dir / source.name
+            shutil.copy2(source, destination)
+            manifest[key] = source.name
         else:
-            manifest[key] = rel(manifest_dir, src)
-            print(f"  Set {key} = {manifest[key]}")
+            manifest[key] = relative_path(manifest_dir, source)
         changed = True
 
-    set_path("temporal_model_path",     args.gru)
-    set_path("calibration_model_path",  args.cal)
-    set_path("movement_model_path",     args.move)
+    set_model_path("temporal_model_path", args.gru)
+    set_model_path("calibration_model_path", args.cal)
+    set_model_path("movement_model_path", args.move)
+
+    if args.gru:
+        manifest["temporal_feature_schema"] = TEMPORAL_FEATURE_SCHEMA
+        if not args.gru_norm:
+            raise ValueError("--gru-norm is mandatory when attaching a GRU model")
+    if args.cal:
+        manifest["calibration_feature_schema"] = CALIBRATION_FEATURE_SCHEMA
+    if args.move:
+        manifest["movement_feature_schema"] = MOVEMENT_FEATURE_SCHEMA
 
     if args.gru_norm:
         norm_path = Path(args.gru_norm).resolve()
-        if not norm_path.exists():
-            print(f"[WARN] norm_constants.json not found: {norm_path}")
-        else:
-            with open(norm_path) as f:
-                norm = json.load(f)
-            manifest["gru_norm"] = {
-                "log_w_mean": norm["log_w_mean"],
-                "log_w_std":  norm["log_w_std"],
-                "log_h_mean": norm["log_h_mean"],
-                "log_h_std":  norm["log_h_std"],
-                "dt_mean":    norm["dt_mean"],
-                "dt_std":     norm["dt_std"],
-                "age_mean":   norm["age_mean"],
-                "age_std":    norm["age_std"],
-            }
-            print(f"  Set gru_norm from {norm_path.name}")
-            changed = True
+        with norm_path.open(encoding="utf-8") as handle:
+            norm = json.load(handle)
+        required = set(GRU_NORM_FIELDS)
+        missing = required.difference(norm)
+        if missing:
+            raise ValueError(f"GRU norm constants missing: {sorted(missing)}")
+        if any(float(norm[key]) <= 0 for key in ("log_w_std", "log_h_std", "dt_std", "age_std")):
+            raise ValueError("GRU standard deviations must be positive")
+        manifest["gru_norm"] = norm
+        changed = True
+
+    if args.pose:
+        names = [name.strip() for name in args.keypoint_names.split(",") if name.strip()]
+        if len(names) != args.keypoint_count:
+            raise ValueError("--keypoint-names count must equal --keypoint-count")
+        manifest["is_pose_model"] = True
+        manifest["output_schema"] = "yolo-pose-kpt-v1"
+        manifest["keypoint_count"] = args.keypoint_count
+        manifest["keypoint_names"] = names
+        manifest["keypoint_visibility_is_logit"] = bool(args.keypoint_visibility_is_logit)
+        changed = True
 
     if not changed:
-        print("Nothing to update — pass at least one of --gru, --cal, --move.")
-        return
+        raise SystemExit("Nothing to update")
 
-    # Back up the original
-    backup = manifest_path.with_suffix(".json.bak")
-    shutil.copy2(manifest_path, backup)
-    print(f"\n  Backup saved: {backup.name}")
-
-    with open(manifest_path, "w") as f:
-        json.dump(manifest, f, indent=2)
-    print(f"  Updated: {manifest_path}")
-
-    print("\nReload the model in King Aim to apply the new networks.")
+    atomic_write_json(manifest_path, manifest)
+    print(f"Updated {manifest_path}")
+    print("schema_version=2")
+    print("Reload the model bundle in King Aim after validating the feature schemas.")
 
 
 if __name__ == "__main__":

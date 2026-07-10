@@ -1,20 +1,17 @@
 namespace Aimmy2.Gamepad
 {
     /// <summary>
-    /// Combines the player's own physical right-stick input with the assist controller's
-    /// computed correction. When no target is locked (assistMagnitude == 0), the player's
-    /// input passes through unchanged. As the assist correction grows (closer/urgent target),
-    /// the player's own stick contribution is progressively suppressed so it can't fight the
-    /// assist while it's actively settling onto a target.
+    /// Cooperative gamepad composition. The physical player's right-stick contribution is never
+    /// suppressed. Vision/TestArena assistance is bounded down as physical intent grows so strong
+    /// user input always has authority over the composed state.
     /// </summary>
     public static class StickBlender
     {
-        /// <summary>
-        /// DominanceThreshold is the assist output magnitude (0..1) at which the player's own
-        /// input is fully suppressed. Below it, player input is scaled down linearly as assist
-        /// magnitude grows; above it, only the assist output is used.
-        /// </summary>
-        public const float DominanceThreshold = 0.5f;
+        /// <summary>Physical stick magnitude where assistance starts yielding to the user.</summary>
+        public const float UserOverrideStart = 0.15f;
+
+        /// <summary>Physical stick magnitude where assistance contribution reaches zero.</summary>
+        public const float FullUserAuthority = 0.85f;
 
         public static (float RX, float RY) Blend(
             float playerX,
@@ -22,16 +19,33 @@ namespace Aimmy2.Gamepad
             float assistX,
             float assistY)
         {
-            float assistMagnitude = MathF.Sqrt(assistX * assistX + assistY * assistY);
+            playerX = Math.Clamp(playerX, -1f, 1f);
+            playerY = Math.Clamp(playerY, -1f, 1f);
+            assistX = Math.Clamp(assistX, -1f, 1f);
+            assistY = Math.Clamp(assistY, -1f, 1f);
 
-            float playerWeight = DominanceThreshold <= 0f
-                ? 0f
-                : 1f - Math.Clamp(assistMagnitude / DominanceThreshold, 0f, 1f);
+            float playerMagnitude = Math.Clamp(
+                MathF.Sqrt(playerX * playerX + playerY * playerY),
+                0f,
+                1f);
 
-            float rx = Math.Clamp(playerX * playerWeight + assistX, -1f, 1f);
-            float ry = Math.Clamp(playerY * playerWeight + assistY, -1f, 1f);
+            float assistWeight = 1f - SmoothStep(
+                UserOverrideStart,
+                FullUserAuthority,
+                playerMagnitude);
 
+            float rx = Math.Clamp(playerX + assistX * assistWeight, -1f, 1f);
+            float ry = Math.Clamp(playerY + assistY * assistWeight, -1f, 1f);
             return (rx, ry);
+        }
+
+        private static float SmoothStep(float edge0, float edge1, float value)
+        {
+            if (edge1 <= edge0)
+                return value >= edge1 ? 1f : 0f;
+
+            float t = Math.Clamp((value - edge0) / (edge1 - edge0), 0f, 1f);
+            return t * t * (3f - 2f * t);
         }
     }
 }

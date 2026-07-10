@@ -17,6 +17,7 @@ namespace Aimmy2.Tests
             new()
             {
                 Rectangle = new RectangleF(x, y, size, size),
+                ScreenRectangle = new RectangleF(x, y, size, size),
                 Confidence = confidence,
                 ClassId = classId,
                 ClassName = className,
@@ -99,7 +100,7 @@ namespace Aimmy2.Tests
             var tracks = manager.Update(detections, ClassRoles, now);
             var selector = new TargetSelector();
 
-            var result = selector.Select(tracks, TargetMode.EnemyOnly, SemanticRole.Enemy, null, new PointF(320, 320), 320f);
+            var result = selector.Select(tracks, TargetMode.EnemyOnly, SemanticRole.Enemy, null, new PointF(320, 320), 320f, now);
 
             Assert.NotNull(result.SelectedTrack);
             Assert.Equal(SemanticRole.Enemy, result.SelectedTrack!.Role);
@@ -118,7 +119,7 @@ namespace Aimmy2.Tests
                 now = now.AddMilliseconds(16);
                 var detections = new List<Prediction> { MakePrediction(0, "enemy", 100 + i, 100) };
                 var tracks = manager.Update(detections, ClassRoles, now);
-                var result = selector.Select(tracks, TargetMode.EnemyOnly, SemanticRole.Enemy, null, new PointF(320, 320), 320f);
+                var result = selector.Select(tracks, TargetMode.EnemyOnly, SemanticRole.Enemy, null, new PointF(320, 320), 320f, now);
 
                 Assert.NotNull(result.SelectedTrack);
                 firstSelected ??= result.SelectedTrack!.TrackId;
@@ -130,7 +131,7 @@ namespace Aimmy2.Tests
         public void PersistentChallenger_EventuallySwitchesSelection()
         {
             var manager = new TrackManager();
-            var selector = new TargetSelector { ConfirmationFrames = 3 };
+            var selector = new TargetSelector { SwitchConfirmationMs = 40 };
             var now = DateTime.UtcNow;
 
             // Frame 0: only the "current" far enemy is present, becomes selected.
@@ -138,7 +139,7 @@ namespace Aimmy2.Tests
             var tracks = manager.Update(
                 new List<Prediction> { MakePrediction(0, "enemy_far", 20, 20) },
                 ClassRoles, now);
-            var result = selector.Select(tracks, TargetMode.EnemyOnly, SemanticRole.Enemy, null, new PointF(320, 320), 320f);
+            var result = selector.Select(tracks, TargetMode.EnemyOnly, SemanticRole.Enemy, null, new PointF(320, 320), 320f, now);
             int originalId = result.SelectedTrack!.TrackId;
 
             // Now introduce a much closer challenger for N+1 frames.
@@ -152,7 +153,7 @@ namespace Aimmy2.Tests
                     MakePrediction(0, "enemy_near", 310, 310),
                 };
                 tracks = manager.Update(detections, ClassRoles, now);
-                last = selector.Select(tracks, TargetMode.EnemyOnly, SemanticRole.Enemy, null, new PointF(320, 320), 320f);
+                last = selector.Select(tracks, TargetMode.EnemyOnly, SemanticRole.Enemy, null, new PointF(320, 320), 320f, now);
             }
 
             Assert.NotNull(last!.SelectedTrack);

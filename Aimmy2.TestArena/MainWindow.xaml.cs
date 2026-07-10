@@ -1,3 +1,7 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -19,6 +23,10 @@ namespace Aimmy2.TestArena
 
         private AIManager? _aiManager;
         private IGamepadOutput? _gamepadOutput;
+
+        private readonly UdpClient _pointingTelemetry = new();
+        private readonly IPEndPoint _pointingTelemetryEndpoint = new(IPAddress.Loopback, 28761);
+        private readonly string _pointingSessionId = $"testarena_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}";
 
         public MainWindow()
         {
@@ -161,7 +169,54 @@ namespace Aimmy2.TestArena
                 Canvas.SetTop(visual.Label, top - 16);
             }
 
+            PublishPointingTelemetry();
             UpdateDiagnostics();
+        }
+
+
+        private void PublishPointingTelemetry()
+        {
+            // Generic TestArena pointing telemetry used only by training/record_movement.py.
+            // Select the nearest visible synthetic object to the canvas centre.
+            ArenaTarget? target = _scenario.Targets
+                .Where(t => t.Visible)
+                .OrderBy(t =>
+                {
+                    double dx = t.Position.X - ArenaCanvas.ActualWidth / 2.0;
+                    double dy = t.Position.Y - ArenaCanvas.ActualHeight / 2.0;
+                    return dx * dx + dy * dy;
+                })
+                .FirstOrDefault();
+
+            if (target == null || ArenaCanvas.ActualWidth <= 0 || ArenaCanvas.ActualHeight <= 0)
+                return;
+
+            try
+            {
+                Point referenceScreen = ArenaCanvas.PointToScreen(new Point(
+                    ArenaCanvas.ActualWidth / 2.0,
+                    ArenaCanvas.ActualHeight / 2.0));
+                Point targetScreen = ArenaCanvas.PointToScreen(target.Position);
+                Point targetRightScreen = ArenaCanvas.PointToScreen(new Point(
+                    target.Position.X + target.Size.Width / 2.0,
+                    target.Position.Y));
+
+                var message = new
+                {
+                    source = "testarena_pointing",
+                    session_id = _pointingSessionId,
+                    task_id = _scenario.Kind.ToString(),
+                    dx = targetScreen.X - referenceScreen.X,
+                    dy = targetScreen.Y - referenceScreen.Y,
+                    target_size = Math.Abs(targetRightScreen.X - targetScreen.X) * 2.0,
+                };
+                byte[] payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(message));
+                _pointingTelemetry.Send(payload, payload.Length, _pointingTelemetryEndpoint);
+            }
+            catch (SocketException)
+            {
+                // Recorder is optional. UDP delivery is deliberately best-effort.
+            }
         }
 
         private void ModelPipelineCheckBox_Changed(object sender, RoutedEventArgs e)
@@ -257,6 +312,7 @@ namespace Aimmy2.TestArena
         private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
             _renderTimer.Stop();
+            _pointingTelemetry.Dispose();
             StopPipeline();
         }
     }

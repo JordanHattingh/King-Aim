@@ -1,4 +1,4 @@
-﻿using Aimmy2.Class;
+using Aimmy2.Class;
 
 namespace AILogic
 {
@@ -22,12 +22,12 @@ namespace AILogic
         private const double MeasurementNoise = 0.5;
         private const double MaxVelocity = 5000.0;
 
-        private DateTime _lastUpdateTime = DateTime.UtcNow;
+        private DateTime _lastUpdateTime;
         private bool _initialized = false;
 
         public void UpdateKalmanFilter(Detection detection)
         {
-            var now = DateTime.UtcNow;
+            var now = detection.Timestamp == default ? DateTime.UtcNow : detection.Timestamp;
 
             if (!_initialized)
             {
@@ -82,30 +82,34 @@ namespace AILogic
             _lastUpdateTime = now;
         }
 
-        public Detection GetKalmanPosition(double mouseSpeed = 0)
+        public Detection GetKalmanPosition(
+            double mouseSpeed = 0,
+            DateTime? timestamp = null,
+            bool applyLead = true)
         {
-            var now = DateTime.UtcNow;
+            var now = timestamp ?? DateTime.UtcNow;
             double dt = (now - _lastUpdateTime).TotalSeconds;
 
             // Predict current position based on time since last update
             double currentX = _x + _vx * dt;
             double currentY = _y + _vy * dt;
 
-            // Get base lead time from settings
-            double leadTime = AimSettings.KalmanLeadTime;
-
-            // Dynamically adjust based on mouse speed if available
-            if (mouseSpeed > 0.0)
+            double leadTime = 0.0;
+            if (applyLead)
             {
-                // Estimate animation completion time from mouse speed
-                double estimatedCompletionTime = 100.0 / mouseSpeed;
-                double dynamicLead = estimatedCompletionTime * 0.4; // Use 40% of completion time
-                // Scale by user setting (setting acts as multiplier around the dynamic value)
-                leadTime = dynamicLead * (leadTime / 0.10); // 0.10 is the default, so setting of 0.10 = 1x multiplier
-                leadTime = Math.Clamp(leadTime, 0.02, 0.3); // Cap to reasonable range
+                // Legacy prediction callers may request a configured lead. Tracking callers pass
+                // applyLead:false because a Track measurement must represent observation-time state.
+                leadTime = AimSettings.KalmanLeadTime;
+
+                if (mouseSpeed > 0.0)
+                {
+                    double estimatedCompletionTime = 100.0 / mouseSpeed;
+                    double dynamicLead = estimatedCompletionTime * 0.4;
+                    leadTime = dynamicLead * (leadTime / 0.10);
+                    leadTime = Math.Clamp(leadTime, 0.02, 0.3);
+                }
             }
 
-            // Predict where target will be after lead time
             double predictedX = currentX + _vx * leadTime;
             double predictedY = currentY + _vy * leadTime;
 
@@ -121,6 +125,7 @@ namespace AILogic
         {
             _x = _y = _vx = _vy = 0;
             _p00 = _p11 = _p22 = _p33 = 1.0;
+            _lastUpdateTime = default;
             _initialized = false;
         }
     }
@@ -153,7 +158,7 @@ namespace AILogic
 
         public void UpdateDetection(WTFDetection detection)
         {
-            var now = DateTime.UtcNow;
+            var now = detection.Timestamp == default ? DateTime.UtcNow : detection.Timestamp;
 
             if (!_initialized)
             {

@@ -62,7 +62,17 @@ namespace Aimmy2.AILogic
         /// </summary>
         public void FillSequence(float[] dest, GruNormConstants norm)
         {
-            int oldest = _count < Capacity ? 0 : _head;
+            ArgumentNullException.ThrowIfNull(dest);
+            ArgumentNullException.ThrowIfNull(norm);
+            if (dest.Length < Capacity * FeatureCount)
+                throw new ArgumentException(
+                    $"GRU destination buffer must contain at least {Capacity * FeatureCount} floats.",
+                    nameof(dest));
+            if (!IsReady)
+                throw new InvalidOperationException(
+                    $"GRU sequence requires {Capacity} observations; current count is {_count}.");
+
+            int oldest = _head;
             for (int i = 0; i < Capacity; i++)
             {
                 var obs = _buf[(oldest + i) % Capacity];
@@ -91,6 +101,7 @@ namespace Aimmy2.AILogic
 
         public void Reset()
         {
+            Array.Clear(_buf);
             _head = 0;
             _count = 0;
         }

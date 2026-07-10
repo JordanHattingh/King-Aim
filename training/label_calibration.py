@@ -1,153 +1,210 @@
 """
-King Aim — Calibration label assignment.
+King Aim — calibration label assignment (detection-context-v2).
 
-The TrackLogger writes calibration_samples.json with label=null.
-This script assigns label=1 (true positive) or label=0 (false positive)
-by comparing each detection box against a ground-truth annotation file.
+TrackLogger v2 records frame_id and detection_index. Ground-truth matching is
+performed per SESSION + FRAME using one-to-one maximum-IoU assignment so duplicate
+detections on one object cannot all become true positives.
 
-Ground truth format (YOLO txt, one file per session image):
-    class cx cy w h   (all in 0..1 normalised image coords)
+Expected ground-truth layouts (YOLO txt):
+    <gt-dir>/<session_id>/frame_<frame_id>.txt     preferred
+    <gt-dir>/frame_<frame_id>.txt                  fallback for a single session
 
-If you don't have ground-truth annotations, use the '--conf-only' flag to
-label samples above a confidence threshold as 1 and below as 0 — this is a
-crude bootstrap useful for training a first calibration model quickly, then
-replace with properly annotated labels once the model is in use.
+Each GT row:
+    class cx cy w h
 
-Usage:
-    # With ground-truth YOLO annotations:
-    python label_calibration.py \
-        --samples runs/logs/session_*/calibration_samples.json \
-        --gt-dir  data/gt_labels/ \
-        --iou-threshold 0.5 \
-        --out     data/calibration_data.json
-
-    # Bootstrap from confidence only:
-    python label_calibration.py \
-        --samples runs/logs/session_*/calibration_samples.json \
-        --conf-only --conf-threshold 0.6 \
-        --out data/calibration_data.json
+Bootstrap confidence-only labels are intentionally marked as bootstrap data and
+must not be used as the final calibration evaluation set.
 """
 
-import json, glob, os, math, argparse
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+from collections import defaultdict
 from pathlib import Path
 
 
-def iou(a, b):
-    """Intersection-over-Union for (cx, cy, w, h) normalised boxes."""
+def iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
     ax1, ay1 = a[0] - a[2] / 2, a[1] - a[3] / 2
     ax2, ay2 = a[0] + a[2] / 2, a[1] + a[3] / 2
     bx1, by1 = b[0] - b[2] / 2, b[1] - b[3] / 2
     bx2, by2 = b[0] + b[2] / 2, b[1] + b[3] / 2
     ix1, iy1 = max(ax1, bx1), max(ay1, by1)
     ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
     union = a[2] * a[3] + b[2] * b[3] - inter
     return inter / union if union > 0 else 0.0
 
 
-def load_gt_boxes(gt_path):
-    """Load ground-truth boxes from a YOLO label file. Returns list of (cx,cy,w,h)."""
-    if not os.path.exists(gt_path):
+def load_gt_boxes(gt_path: Path) -> list[tuple[float, float, float, float]]:
+    if not gt_path.exists():
         return []
-    boxes = []
-    with open(gt_path) as f:
-        for line in f:
+    boxes: list[tuple[float, float, float, float]] = []
+    with gt_path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
             parts = line.strip().split()
-            if len(parts) >= 5:
-                boxes.append(tuple(float(x) for x in parts[1:5]))
+            if not parts:
+                continue
+            if len(parts) < 5:
+                raise ValueError(f"Malformed YOLO label {gt_path}:{line_number}")
+            boxes.append(tuple(float(value) for value in parts[1:5]))
     return boxes
 
 
-def label_with_gt(samples, gt_dir, iou_threshold):
-    """Match each sample box against GT boxes; assign label=1 if IoU >= threshold."""
-    labeled = []
-    missing_gt = 0
-    for s in samples:
-        det_box = (s["cx_norm"], s["cy_norm"], s["w_norm"], s["h_norm"])
-        # GT file naming: we don't have per-detection image names logged yet,
-        # so we can't do exact per-image matching here without extra metadata.
-        # For now, mark as needing a separate annotation pipeline.
-        s = dict(s)
-        s["label"] = None
-        labeled.append(s)
-        missing_gt += 1
-    if missing_gt:
-        print(f"  [WARN] GT matching requires per-detection image paths "
-              f"(not yet in log format). Use --conf-only for bootstrap labels.")
-    return labeled
+def resolve_gt_path(gt_dir: Path, session_id: str, frame_id: int) -> Path:
+    preferred = gt_dir / session_id / f"frame_{frame_id}.txt"
+    if preferred.exists():
+        return preferred
+    return gt_dir / f"frame_{frame_id}.txt"
 
 
-def label_conf_only(samples, threshold):
-    """Bootstrap: samples above threshold = 1, below = 0."""
-    labeled = []
-    pos = neg = 0
-    for s in samples:
-        s = dict(s)
-        s["label"] = 1 if s["raw_conf"] >= threshold else 0
-        labeled.append(s)
-        if s["label"]: pos += 1
-        else: neg += 1
-    print(f"  Bootstrap labels: {pos} positives, {neg} negatives "
-          f"(threshold={threshold:.2f})")
-    return labeled
+def _read_records(path: Path) -> list[dict]:
+    if path.suffix == ".jsonl":
+        records: list[dict] = []
+        with path.open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Malformed JSONL {path}:{line_number}: {exc}") from exc
+        return records
+
+    with path.open(encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, list):
+        raise ValueError(f"Expected a JSON array in {path}")
+    return data
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Assign calibration labels to TrackLogger calibration_samples.json")
-    parser.add_argument("--samples",   nargs="+", required=True,
-                        help="Path(s) / glob(s) to calibration_samples.json files")
-    parser.add_argument("--out",       default="data/calibration_data.json",
-                        help="Output path for labeled dataset")
-    parser.add_argument("--gt-dir",    default=None,
-                        help="Directory containing YOLO ground-truth .txt files")
-    parser.add_argument("--iou-threshold", type=float, default=0.5)
-    parser.add_argument("--conf-only", action="store_true",
-                        help="Use confidence threshold instead of GT annotation")
-    parser.add_argument("--conf-threshold", type=float, default=0.6,
-                        help="Confidence above which a detection counts as TP (--conf-only mode)")
-    args = parser.parse_args()
-
-    # Expand globs
-    paths = []
-    for pattern in args.samples:
-        expanded = glob.glob(pattern, recursive=True)
-        paths.extend(expanded if expanded else [pattern])
-
-    all_samples = []
-    for path in paths:
-        if not os.path.exists(path):
+def load_samples(paths: list[str]) -> list[dict]:
+    samples: list[dict] = []
+    for path_text in paths:
+        path = Path(path_text)
+        if not path.exists():
             print(f"  [WARN] Not found: {path}")
             continue
-        with open(path) as f:
-            data = json.load(f)
-        print(f"  Loaded {len(data)} samples from {path}")
-        all_samples.extend(data)
+        data = _read_records(path)
+        session_id = path.parent.name
+        for sample in data:
+            record = dict(sample)
+            record.setdefault("session_id", session_id)
+            samples.append(record)
+        print(f"  Loaded {len(data)} samples from {path} as session {session_id}")
+    return samples
 
-    if not all_samples:
-        print("No samples loaded — check your --samples paths.")
-        return
 
-    print(f"\nTotal: {len(all_samples)} samples")
+def label_with_gt(samples: list[dict], gt_dir: Path, iou_threshold: float) -> list[dict]:
+    grouped: dict[tuple[str, int], list[dict]] = defaultdict(list)
+    for sample in samples:
+        if "frame_id" not in sample or int(sample["frame_id"]) < 0:
+            raise ValueError(
+                "Calibration samples need frame_id from TrackLogger schema v2. "
+                "Discard old feature-schema logs and collect new data."
+            )
+        grouped[(str(sample["session_id"]), int(sample["frame_id"]))].append(sample)
 
+    labeled: list[dict] = []
+    missing_gt_frames = 0
+    for (session_id, frame_id), frame_samples in sorted(grouped.items()):
+        gt_path = resolve_gt_path(gt_dir, session_id, frame_id)
+        if not gt_path.exists():
+            missing_gt_frames += 1
+            continue
+        gt_boxes = load_gt_boxes(gt_path)
+
+        # Build all viable detection/GT pairs and greedily accept highest IoU with
+        # one-to-one constraints. This prevents duplicate detections from all being TP.
+        candidates: list[tuple[float, int, int]] = []
+        for detection_index, sample in enumerate(frame_samples):
+            det_box = (
+                float(sample["cx_norm"]),
+                float(sample["cy_norm"]),
+                float(sample["w_norm"]),
+                float(sample["h_norm"]),
+            )
+            for gt_index, gt_box in enumerate(gt_boxes):
+                overlap = iou(det_box, gt_box)
+                if overlap >= iou_threshold:
+                    candidates.append((overlap, detection_index, gt_index))
+
+        candidates.sort(reverse=True)
+        matched_detections: set[int] = set()
+        matched_gt: set[int] = set()
+        assigned_iou: dict[int, float] = {}
+        for overlap, detection_index, gt_index in candidates:
+            if detection_index in matched_detections or gt_index in matched_gt:
+                continue
+            matched_detections.add(detection_index)
+            matched_gt.add(gt_index)
+            assigned_iou[detection_index] = overlap
+
+        for detection_index, sample in enumerate(frame_samples):
+            record = dict(sample)
+            record["label"] = 1 if detection_index in matched_detections else 0
+            record["matched_iou"] = float(assigned_iou.get(detection_index, 0.0))
+            record["label_source"] = "ground_truth_iou"
+            labeled.append(record)
+
+    if missing_gt_frames:
+        print(f"  [WARN] Skipped {missing_gt_frames} frames with no GT label file.")
+    return labeled
+
+
+def label_conf_only(samples: list[dict], threshold: float) -> list[dict]:
+    print("[WARN] CONFIDENCE-ONLY LABELS ARE BOOTSTRAP DATA, NOT CALIBRATION GROUND TRUTH.")
+    labeled: list[dict] = []
+    for sample in samples:
+        record = dict(sample)
+        record["label"] = 1 if float(record["raw_conf"]) >= threshold else 0
+        record["label_source"] = "bootstrap_confidence_threshold"
+        labeled.append(record)
+    return labeled
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Assign labels to King Aim calibration samples")
+    parser.add_argument("--samples", nargs="+", required=True)
+    parser.add_argument("--out", default="data/calibration_data.json")
+    parser.add_argument("--gt-dir", default=None)
+    parser.add_argument("--iou-threshold", type=float, default=0.5)
+    parser.add_argument("--conf-only", action="store_true")
+    parser.add_argument("--conf-threshold", type=float, default=0.6)
+    args = parser.parse_args()
+
+    expanded_paths: list[str] = []
+    for pattern in args.samples:
+        expanded = glob.glob(pattern, recursive=True)
+        expanded_paths.extend(expanded if expanded else [pattern])
+
+    samples = load_samples(expanded_paths)
+    if not samples:
+        raise SystemExit("No samples loaded")
+
+    print(f"\nTotal: {len(samples)} samples across {len(set(str(s['session_id']) for s in samples))} sessions")
     if args.conf_only:
-        labeled = label_conf_only(all_samples, args.conf_threshold)
+        labeled = label_conf_only(samples, args.conf_threshold)
     else:
-        labeled = label_with_gt(all_samples, args.gt_dir, args.iou_threshold)
+        if not args.gt_dir:
+            raise SystemExit("--gt-dir is required unless --conf-only is explicitly selected")
+        labeled = label_with_gt(samples, Path(args.gt_dir), args.iou_threshold)
 
-    # Remove samples with null labels (GT matching not yet possible)
-    valid = [s for s in labeled if s["label"] is not None]
-    if len(valid) < len(labeled):
-        print(f"  Dropped {len(labeled) - len(valid)} samples without labels.")
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8") as handle:
+        json.dump(labeled, handle, separators=(",", ":"))
 
-    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
-    with open(args.out, "w") as f:
-        json.dump(valid, f, indent=None, separators=(",", ":"))
-    print(f"\nWrote {len(valid)} labeled samples → {args.out}")
-    if valid:
-        pos = sum(s["label"] for s in valid)
-        print(f"  Positive (TP): {pos}  Negative (FP): {len(valid) - pos}  "
-              f"Balance: {pos/len(valid)*100:.1f}% positive")
+    positives = sum(int(sample["label"]) for sample in labeled)
+    print(f"\nWrote {len(labeled)} labeled samples -> {out_path}")
+    if labeled:
+        print(
+            f"  TP={positives} FP={len(labeled)-positives} "
+            f"positive_rate={positives/len(labeled)*100:.1f}%"
+        )
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ namespace Aimmy2.Tests
             DeadbandRadius = 0.02f,
             MaxOutput = 1.0f,
             MaxSlewRate = 100f, // large so single-step tests aren't slew-limited
-            MaxObservationAge = 10,
+            MaxObservationAgeMs = 100,
         };
 
         [Fact]
@@ -69,7 +69,7 @@ namespace Aimmy2.Tests
         public void StaleObservation_IsRejected()
         {
             var controller = MakeController();
-            var (rx, ry) = controller.Update(true, 0.5f, 0.5f, 0f, 0f, 0.9f, observationAgeSamples: 999, dtSeconds: 0.016);
+            var (rx, ry) = controller.Update(true, 0.5f, 0.5f, 0f, 0f, 0.9f, observationAgeMs: 999, dtSeconds: 0.016);
 
             Assert.Equal(0f, rx, 3);
             Assert.Equal(0f, ry, 3);
@@ -132,8 +132,8 @@ namespace Aimmy2.Tests
             // Simulate a burst of degenerate/failed vision frames (NaN-free but zeroed/invalid).
             var exception = Record.Exception(() =>
             {
-                controller.Update(false, 0f, 0f, 0f, 0f, 0f, int.MaxValue, 0.0);
-                controller.Update(true, 0f, 0f, 0f, 0f, 0f, -1, -1.0);
+                controller.Update(false, 0f, 0f, 0f, 0f, 0f, double.PositiveInfinity, 0.0);
+                controller.Update(true, 0f, 0f, 0f, 0f, 0f, -1.0, -1.0);
                 controller.Update(false, float.NaN, float.NaN, 0f, 0f, 0f, 0, 0.016);
             });
 

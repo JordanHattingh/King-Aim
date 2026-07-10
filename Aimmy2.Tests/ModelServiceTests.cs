@@ -18,7 +18,7 @@ namespace Aimmy2.Tests
                 var manifest = ModelService.LoadOrCreateManifest(tempDir, onnxPath, classes);
 
                 Assert.Single(manifest.Classes);
-                Assert.Equal(SemanticRole.Enemy, manifest.Classes[0].SemanticRole);
+                Assert.Equal(SemanticRole.Unknown, manifest.Classes[0].SemanticRole);
                 Assert.True(File.Exists(ModelManifest.GetManifestPathForModel(onnxPath)));
             }
             finally
@@ -88,6 +88,45 @@ namespace Aimmy2.Tests
             Assert.False(result);
             Assert.NotNull(error);
             Assert.Null(service.Active);
+        }
+
+
+        [Fact]
+        public void AcquireActive_ReturnsNull_WhenNoModelIsActive()
+        {
+            using var service = new ModelService();
+            Assert.False(service.HasActiveModel);
+            Assert.Null(service.AcquireActive());
+        }
+
+        [Fact]
+        public void TemporalManifest_RequiresNormalizationContract()
+        {
+            var manifest = ModelManifest.CreateFallback(
+                "temporal-test",
+                "Temporal Test",
+                new Dictionary<int, string> { { 0, "enemy" } });
+            manifest.TemporalModelPath = "trajectory_gru.onnx";
+            manifest.GruNorm = null;
+
+            Assert.Throws<InvalidDataException>(() => manifest.Validate());
+        }
+
+        [Fact]
+        public void FallbackManifest_PreservesAllKnownClassesAsUnknownRoles()
+        {
+            var manifest = ModelManifest.CreateFallback(
+                "multi",
+                "Multi",
+                new Dictionary<int, string>
+                {
+                    { 0, "enemy" },
+                    { 1, "friendly" },
+                    { 2, "objective" },
+                });
+
+            Assert.Equal(3, manifest.Classes.Count);
+            Assert.All(manifest.Classes, entry => Assert.Equal(SemanticRole.Unknown, entry.SemanticRole));
         }
 
         [Fact]

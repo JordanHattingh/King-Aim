@@ -9,29 +9,28 @@ namespace Aimmy2.AILogic
         public SemanticRole Role { get; internal set; }
         public int ClassId { get; internal set; }
         public string ClassName { get; internal set; } = "";
+
+        /// <summary>Absolute desktop-pixel bounding box.</summary>
         public RectangleF BoundingBox { get; internal set; }
+
         public float Confidence { get; internal set; }
         public DateTime FirstSeen { get; internal set; }
         public DateTime LastSeen { get; internal set; }
         public int FramesSinceLastSeen { get; internal set; }
+
+        /// <summary>
+        /// Velocity in normalized display units per second. X=1 means one display-width per second;
+        /// Y=1 means one display-height per second. This is intentionally frame-rate independent.
+        /// </summary>
         public PointF Velocity { get; internal set; }
+
         public int ObservationCount { get; internal set; }
 
-        // Per-track Kalman filter: fallback when GRU buffer is not yet full.
+        internal DateTime LastBufferTimestamp { get; set; }
         internal KalmanPrediction Kalman { get; } = new();
-
-        // 8-frame ring buffer fed to the GRU temporal predictor.
         internal TrackRingBuffer RingBuffer { get; } = new();
 
-        /// <summary>
-        /// Most recent keypoints from the pose model. Null for plain detection models.
-        /// </summary>
         public PlayerKeypoints? Keypoints { get; internal set; }
-
-        /// <summary>
-        /// GRU-predicted next position (screen pixels). Null until buffer has 8 frames.
-        /// Used by AIManager instead of Kalman for the locked target.
-        /// </summary>
         public (float X, float Y)? GruPredictedCenter { get; internal set; }
 
         internal PointF Center => new(
@@ -41,26 +40,24 @@ namespace Aimmy2.AILogic
 
     public sealed class TrackManager
     {
-        private const float IoUWeight = 0.6f;
-        private const float DistanceWeight = 0.4f;
-        private const float MinMatchScore = 0.1f;
-
         private readonly List<Track> _tracks = new();
         private int _nextTrackId = 1;
 
-        // Screen dimensions needed to normalize ring buffer observations to [0,1].
-        public int ScreenWidth  { get; set; } = 1920;
+        public int ScreenWidth { get; set; } = 1920;
         public int ScreenHeight { get; set; } = 1080;
+        public int ScreenLeft { get; set; }
+        public int ScreenTop { get; set; }
 
+        [Obsolete("Track expiry is time based. Use MaxLostSeconds.")]
         public int MaxFramesLost { get; set; } = 5;
 
-        /// <summary>
-        /// Wall-clock time a track may go unmatched before being dropped. This is the actual
-        /// expiry rule (not MaxFramesLost) so tracking survives short detection gaps consistently
-        /// regardless of the AI loop's real FPS — a frame-count-only rule loses tracks almost
-        /// instantly when FPS is low (e.g. 5 missed frames at 5 FPS is a full second gone).
-        /// </summary>
         public double MaxLostSeconds { get; set; } = 0.6;
+
+        /// <summary>First-order velocity filter response rate in 1/seconds.</summary>
+        public float VelocityResponseRatePerSecond { get; set; } = 12f;
+
+        public ITrackAssociationStrategy AssociationStrategy { get; set; } = new GlobalCostTrackAssociation();
+        public TrackAssociationSettings AssociationSettings { get; } = new();
 
         public IReadOnlyList<Track> ActiveTracks => _tracks;
 
@@ -76,71 +73,58 @@ namespace Aimmy2.AILogic
             ArgumentNullException.ThrowIfNull(detections);
             ArgumentNullException.ThrowIfNull(classRoles);
 
+            var unmatchedDetections = new HashSet<int>(Enumerable.Range(0, detections.Count));
+            var matchedTracks = new HashSet<Track>();
+
+            IReadOnlyList<TrackDetectionMatch> matches = AssociationStrategy.Associate(
+                _tracks,
+                detections,
+                frameTime,
+                ScreenWidth,
+                ScreenHeight,
+                AssociationSettings);
+
+            foreach (TrackDetectionMatch match in matches)
+            {
+                if (matchedTracks.Contains(match.Track) || !unmatchedDetections.Contains(match.DetectionIndex))
+                    continue;
+
+                UpdateTrackWithDetection(match.Track, detections[match.DetectionIndex], frameTime);
+                matchedTracks.Add(match.Track);
+                unmatchedDetections.Remove(match.DetectionIndex);
+            }
+
             foreach (var track in _tracks)
             {
-                double dt = Math.Max(0, (frameTime - track.LastSeen).TotalSeconds);
-                if (dt > 0 && dt < MaxLostSeconds)
+                if (matchedTracks.Contains(track))
+                    continue;
+
+                track.FramesSinceLastSeen++;
+
+                double missingAgeSeconds = Math.Max(0, (frameTime - track.LastSeen).TotalSeconds);
+                if (missingAgeSeconds > 0 && missingAgeSeconds < MaxLostSeconds)
                 {
-                    // Use Kalman extrapolation for lost-track prediction: the filter accounts for
-                    // elapsed time and velocity uncertainty, giving a better estimate than raw pixel velocity.
-                    var predicted = track.Kalman.GetKalmanPosition(mouseSpeed: 0);
+                    var predicted = track.Kalman.GetKalmanPosition(mouseSpeed: 0, timestamp: frameTime, applyLead: false);
                     float halfW = track.BoundingBox.Width / 2f;
                     float halfH = track.BoundingBox.Height / 2f;
                     track.BoundingBox = new RectangleF(
-                        predicted.X - halfW, predicted.Y - halfH,
-                        track.BoundingBox.Width, track.BoundingBox.Height);
+                        predicted.X - halfW,
+                        predicted.Y - halfH,
+                        track.BoundingBox.Width,
+                        track.BoundingBox.Height);
                 }
-            }
 
-            var unmatchedDetections = new List<int>(Enumerable.Range(0, detections.Count));
-            var matchedTracks = new HashSet<Track>();
-
-            var candidatePairs = new List<(Track Track, int DetectionIndex, float Score)>();
-            foreach (var track in _tracks)
-            {
-                for (int i = 0; i < detections.Count; i++)
+                if (track.RingBuffer.Count > 0 && frameTime > track.LastBufferTimestamp)
                 {
-                    var detection = detections[i];
-                    SemanticRole detectionRole = classRoles.GetValueOrDefault(detection.ClassId, SemanticRole.Enemy);
+                    float missDt = Math.Clamp(
+                        (float)(frameTime - track.LastBufferTimestamp).TotalSeconds,
+                        0f,
+                        0.1f);
 
-                    if (detection.ClassId != track.ClassId)
-                        continue;
-
-                    float iou = ComputeIoU(track.BoundingBox, detection.Rectangle);
-                    float centerDistance = Distance(TrackCenter(track.BoundingBox), DetectionCenter(detection));
-                    float maxDim = Math.Max(track.BoundingBox.Width, track.BoundingBox.Height);
-                    float normalizedDistance = maxDim > 0 ? Math.Min(1f, centerDistance / (maxDim * 3f)) : 1f;
-
-                    float score = IoUWeight * iou + DistanceWeight * (1f - normalizedDistance);
-                    if (score >= MinMatchScore)
+                    if (missDt > 0f)
                     {
-                        candidatePairs.Add((track, i, score));
-                    }
-                }
-            }
-
-            foreach (var pair in candidatePairs.OrderByDescending(p => p.Score))
-            {
-                if (matchedTracks.Contains(pair.Track) || !unmatchedDetections.Contains(pair.DetectionIndex))
-                    continue;
-
-                var detection = detections[pair.DetectionIndex];
-                UpdateTrackWithDetection(pair.Track, detection, frameTime);
-                matchedTracks.Add(pair.Track);
-                unmatchedDetections.Remove(pair.DetectionIndex);
-            }
-
-            foreach (var track in _tracks)
-            {
-                if (!matchedTracks.Contains(track))
-                {
-                    track.FramesSinceLastSeen++;
-                    // Push a carry-forward Missing observation so the GRU buffer advances
-                    // during detection gaps and doesn't stall on the last-seen frame.
-                    if (track.RingBuffer.Count > 0)
-                    {
-                        float missDt = Math.Clamp((float)(frameTime - track.LastSeen).TotalSeconds, 0f, 0.1f);
                         track.RingBuffer.Push(TrackObservation.Missing(track.RingBuffer.Tail, missDt));
+                        track.LastBufferTimestamp = frameTime;
                     }
                 }
             }
@@ -148,34 +132,49 @@ namespace Aimmy2.AILogic
             foreach (int detectionIndex in unmatchedDetections)
             {
                 var detection = detections[detectionIndex];
-                SemanticRole role = classRoles.GetValueOrDefault(detection.ClassId, SemanticRole.Enemy);
+                SemanticRole role = classRoles.GetValueOrDefault(detection.ClassId, SemanticRole.Unknown);
+                RectangleF detectionBox = GetScreenRectangle(detection);
+                PointF center = TrackCenter(detectionBox);
+
                 var newTrack = new Track
                 {
                     TrackId = _nextTrackId++,
                     Role = role,
                     ClassId = detection.ClassId,
                     ClassName = detection.ClassName,
-                    BoundingBox = detection.Rectangle,
+                    BoundingBox = detectionBox,
                     Confidence = detection.Confidence,
                     FirstSeen = frameTime,
                     LastSeen = frameTime,
+                    LastBufferTimestamp = frameTime,
                     FramesSinceLastSeen = 0,
                     Velocity = PointF.Empty,
                     ObservationCount = 1,
+                    Keypoints = detection.Keypoints,
                 };
+
+                newTrack.Kalman.UpdateKalmanFilter(new KalmanPrediction.Detection
+                {
+                    X = (int)center.X,
+                    Y = (int)center.Y,
+                    Timestamp = frameTime,
+                });
+
+                newTrack.RingBuffer.Push(CreateObservedSample(newTrack, detection, center, dtSeconds: 0f));
                 _tracks.Add(newTrack);
             }
 
             _tracks.RemoveAll(t => (frameTime - t.LastSeen).TotalSeconds > MaxLostSeconds);
-
             return _tracks.ToList();
         }
 
         private void UpdateTrackWithDetection(Track track, Prediction detection, DateTime frameTime)
         {
-            PointF newCenter = DetectionCenter(detection);
+            RectangleF detectionBox = GetScreenRectangle(detection);
+            PointF newCenter = TrackCenter(detectionBox);
+            PointF oldCenter = TrackCenter(track.BoundingBox);
+            float dt = Math.Clamp((float)(frameTime - track.LastSeen).TotalSeconds, 0f, 0.1f);
 
-            // Feed the raw detection into the per-track Kalman filter.
             track.Kalman.UpdateKalmanFilter(new KalmanPrediction.Detection
             {
                 X = (int)newCenter.X,
@@ -183,32 +182,29 @@ namespace Aimmy2.AILogic
                 Timestamp = frameTime,
             });
 
-            // Ask Kalman for its smoothed current estimate (lead=0).
-            // This gives a noise-filtered position rather than the raw detection jitter.
-            var smoothed = track.Kalman.GetKalmanPosition(mouseSpeed: 0);
+            var smoothedDetection = track.Kalman.GetKalmanPosition(mouseSpeed: 0, timestamp: frameTime, applyLead: false);
+            PointF smoothedCenter = new(smoothedDetection.X, smoothedDetection.Y);
 
-            // Derive velocity from the Kalman state (smoothed estimate vs previous smoothed position).
-            // Use the old bounding-box centre as the "previous" for velocity calculation.
-            PointF oldCenter = TrackCenter(track.BoundingBox);
-            float velX = smoothed.X - oldCenter.X;
-            float velY = smoothed.Y - oldCenter.Y;
+            if (dt > 1e-5f)
+            {
+                float sw = Math.Max(ScreenWidth, 1);
+                float sh = Math.Max(ScreenHeight, 1);
+                float measuredVx = ((smoothedCenter.X - oldCenter.X) / sw) / dt;
+                float measuredVy = ((smoothedCenter.Y - oldCenter.Y) / sh) / dt;
+                float alpha = 1f - MathF.Exp(-Math.Max(VelocityResponseRatePerSecond, 0f) * dt);
 
-            // Light EMA on top of Kalman velocity to damp sudden spikes (Kalman velocity can
-            // jump on first-observation frames when the filter is not yet converged).
-            const float velSmoothing = 0.5f;
-            track.Velocity = new PointF(
-                track.Velocity.X * velSmoothing + velX * (1f - velSmoothing),
-                track.Velocity.Y * velSmoothing + velY * (1f - velSmoothing));
+                track.Velocity = new PointF(
+                    track.Velocity.X + (measuredVx - track.Velocity.X) * alpha,
+                    track.Velocity.Y + (measuredVy - track.Velocity.Y) * alpha);
+            }
 
-            // Use the Kalman-smoothed centre to reposition the bounding box, keeping its size unchanged.
-            float halfW = detection.Rectangle.Width / 2f;
-            float halfH = detection.Rectangle.Height / 2f;
-            track.BoundingBox = new RectangleF(smoothed.X - halfW, smoothed.Y - halfH,
-                detection.Rectangle.Width, detection.Rectangle.Height);
-
-            // Capture timing BEFORE updating LastSeen so DtSeconds is the real inter-frame gap.
-            float dt  = Math.Clamp((float)(frameTime - track.LastSeen).TotalSeconds, 0f, 0.1f);
-            float age = Math.Clamp((float)(frameTime - track.FirstSeen).TotalSeconds, 0f, 0.25f);
+            float halfW = detectionBox.Width / 2f;
+            float halfH = detectionBox.Height / 2f;
+            track.BoundingBox = new RectangleF(
+                smoothedCenter.X - halfW,
+                smoothedCenter.Y - halfH,
+                detectionBox.Width,
+                detectionBox.Height);
 
             track.Confidence = detection.Confidence;
             track.ClassName = detection.ClassName;
@@ -217,30 +213,39 @@ namespace Aimmy2.AILogic
             track.FramesSinceLastSeen = 0;
             track.ObservationCount++;
 
-            // Push real observation into the GRU ring buffer.
-            float sw = Math.Max(ScreenWidth,  1);
-            float sh = Math.Max(ScreenHeight, 1);
-            var center = new PointF(
-                smoothed.X / sw,
-                smoothed.Y / sh);
-            track.RingBuffer.Push(new TrackObservation
-            {
-                CxNorm       = center.X,
-                CyNorm       = center.Y,
-                WNorm        = detection.Rectangle.Width  / sw,
-                HNorm        = detection.Rectangle.Height / sh,
-                Confidence   = detection.Confidence,
-                ObservedMask = 1f,
-                DtSeconds    = dt,
-                AgeSeconds   = age,
-            });
+            track.RingBuffer.Push(CreateObservedSample(track, detection, smoothedCenter, dt));
+            track.LastBufferTimestamp = frameTime;
         }
+
+        private TrackObservation CreateObservedSample(
+            Track track,
+            Prediction detection,
+            PointF center,
+            float dtSeconds)
+        {
+            float sw = Math.Max(ScreenWidth, 1);
+            float sh = Math.Max(ScreenHeight, 1);
+
+            return new TrackObservation
+            {
+                CxNorm = Math.Clamp((center.X - ScreenLeft) / sw, 0f, 1f),
+                CyNorm = Math.Clamp((center.Y - ScreenTop) / sh, 0f, 1f),
+                WNorm = Math.Clamp(track.BoundingBox.Width / sw, 0f, 1f),
+                HNorm = Math.Clamp(track.BoundingBox.Height / sh, 0f, 1f),
+                Confidence = detection.Confidence,
+                ObservedMask = 1f,
+                DtSeconds = dtSeconds,
+                AgeSeconds = 0f,
+            };
+        }
+
+        private static RectangleF GetScreenRectangle(Prediction prediction) =>
+            prediction.ScreenRectangle.Width > 0 && prediction.ScreenRectangle.Height > 0
+                ? prediction.ScreenRectangle
+                : prediction.Rectangle;
 
         private static PointF TrackCenter(RectangleF box) =>
             new(box.X + box.Width / 2f, box.Y + box.Height / 2f);
-
-        private static PointF DetectionCenter(Prediction p) =>
-            new(p.Rectangle.X + p.Rectangle.Width / 2f, p.Rectangle.Y + p.Rectangle.Height / 2f);
 
         private static float Distance(PointF a, PointF b)
         {

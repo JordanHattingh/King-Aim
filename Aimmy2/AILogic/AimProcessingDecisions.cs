@@ -17,29 +17,9 @@ namespace Aimmy2.AILogic
         internal static bool ShouldProcessFrame(
             bool aimAssist,
             bool showDetectedPlayer,
-            bool autoTrigger,
             bool gamepadAssistEnabled) =>
             aimAssist ||
             showDetectedPlayer ||
-            autoTrigger ||
             gamepadAssistEnabled;
-
-        internal static bool ShouldAttemptAutoTrigger(
-            bool autoTrigger,
-            bool aimKeyHeld,
-            bool secondAimKeyHeld,
-            bool constantAiTracking) =>
-            autoTrigger &&
-            aimKeyHeld &&
-            !secondAimKeyHeld &&
-            !constantAiTracking;
-
-        internal static bool ShouldKeepSprayActive(
-            bool autoTrigger,
-            bool aimKeyHeld,
-            bool secondAimKeyHeld) =>
-            autoTrigger &&
-            aimKeyHeld &&
-            secondAimKeyHeld;
     }
 }

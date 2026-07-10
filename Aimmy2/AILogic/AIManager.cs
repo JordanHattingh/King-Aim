@@ -1,4 +1,4 @@
-﻿using AILogic;
+using AILogic;
 using Aimmy2.Class;
 using Aimmy2.Gamepad;
 using Class;
@@ -65,7 +65,6 @@ namespace Aimmy2.AILogic
         private const int SAVE_FRAME_COOLDOWN_MS = 500;
 
         private DateTime lastSavedTime = DateTime.MinValue;
-        private List<string>? _outputNames;
         private RectangleF LastDetectionBox;
         // Last confirmed target box in absolute screen coords — read by CaptureLoopAsync for ROI.
         public RectangleF LastTargetScreenBox { get; private set; }
@@ -81,7 +80,10 @@ namespace Aimmy2.AILogic
         private int ScreenTop => DisplayManager.ScreenTop;
 
         private readonly RunOptions? _modeloptions;
-        private InferenceSession? _onnxModel;
+        private readonly ModelService _modelService = new();
+        private ModelSessionLease? _activeModelLease;
+        private InferenceSession? _benchmarkModelSession;
+        private List<string>? _benchmarkOutputNames;
         private readonly string _modelPath;
         private bool _usingDirectML;
 
@@ -89,6 +91,9 @@ namespace Aimmy2.AILogic
         private Task? _captureTask;
         private readonly LatestFrameMailbox _frameMailbox = new();
         private long _captureFrameId;
+        private readonly Queue<DateTime> _captureCompletionWindow = new();
+        private readonly object _captureMetricsLock = new();
+        private DateTime _lastFullFovCaptureAt = DateTime.MinValue;
         private CancellationTokenSource? _aiLoopCancellation;
         private volatile bool _isAiLoopRunning;
         private volatile bool _benchmarkMode;
@@ -125,19 +130,20 @@ namespace Aimmy2.AILogic
         private readonly object _benchmarkLock = new();
 
 
-        [System.Runtime.InteropServices.DllImport("user32.dll")]
-        private static extern short GetAsyncKeyState(int vKey);
-        private static bool IsLmbDown() => (GetAsyncKeyState(0x01) & 0x8000) != 0;
 
         private readonly CaptureManager _captureManager = new();
         private readonly StickyAimSelector _stickyAimSelector = new();
 
         // ── Training data logger ──────────────────────────────────────────────────
         private readonly TrackLogger _trackLogger = new();
-        private const string LogsRoot = "runs/logs";
+        private static readonly string LogsRoot = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "KingAim", "training", "logs");
 
-        /// <summary>One-line summary of which neural networks are active. Refreshed each frame.</summary>
-        public string NeuralStatusText { get; private set; } = "No model loaded";
+        private string _neuralStatusText = "No model loaded";
+
+        /// <summary>One-line neural status snapshot published atomically for the UI timer.</summary>
+        public string NeuralStatusText => Volatile.Read(ref _neuralStatusText);
 
         // ── Neural companion models ────────────────────────────────────────────────
         // Loaded lazily after the primary detection model is ready, guided by the manifest.
@@ -150,35 +156,21 @@ namespace Aimmy2.AILogic
         // Consumed by HandlePredictions to upgrade the Kalman path when a full buffer is ready.
         private (float X, float Y)? _gruAimHint;
 
-        // Gamepad assist pipeline (parallel to the mouse-aim path above; StickyAimSelector still
-        // drives MouseManager.MoveCrosshair unchanged. Track/target/gamepad only ever produce stick output.)
+        // CaptureLoopAsync runs on a separate task. Publish one immutable reference so ROI capture
+        // cannot combine a SelectedTrackId from one AI iteration with a box from another/legacy path.
+        private sealed record RoiTargetSnapshot(int TrackId, RectangleF BoundingBox, DateTime LastSeen);
+        private RoiTargetSnapshot? _roiTargetSnapshot;
+
+        // Timestamped perception/tracking plus the existing virtual-gamepad accessibility path.
+        // Legacy Aimmy mouse output remains isolated in HandleAim(); the newer track pipeline does not
+        // own a second mouse/recoil/auto-fire implementation.
         private readonly TrackManager _trackManager = new();
         private readonly TargetSelector _targetSelector = new();
         private readonly GamepadAssistController _gamepadAssistController = new();
         private readonly XInputReader _physicalGamepadReader = new();
-        private readonly MouseAimOutput _mouseAimOutput = new();
-        private readonly RecoilCompensator _recoilCompensator = new();
         private IGamepadOutput? _gamepadOutput;
-        private long _gamepadFrameCounter;
         private DateTime _lastGamepadUpdate = DateTime.UtcNow;
-
-        // Mouse aim assist — enabled independently of gamepad assist.
-        public bool MouseAimEnabled { get; set; } = true;
-        public bool RecoilCompensationEnabled
-        {
-            get => _recoilCompensator.Enabled;
-            set => _recoilCompensator.Enabled = value;
-        }
-        public float MouseAimSensitivity
-        {
-            get => _mouseAimOutput.Sensitivity;
-            set => _mouseAimOutput.Sensitivity = value;
-        }
-        public float RecoilStrengthMouse
-        {
-            get => _recoilCompensator.Strength;
-            set => _recoilCompensator.Strength = value;
-        }
+        private DateTime _lastPhysicalGamepadScan = DateTime.MinValue;
 
         // Auto-confidence calibration: rolling window of detection counts per frame.
         // Nudges MinimumConfidence up when too many boxes survive, down when too few.
@@ -199,15 +191,29 @@ namespace Aimmy2.AILogic
         public int EnemyDetections { get; private set; }
         public int FriendlyDetections { get; private set; }
         public int ActiveTracks { get; private set; }
-        public int? SelectedTrackId { get; private set; }
-        public string? SelectedClass { get; private set; }
+        private int _selectedTrackId = -1;
+        private string? _selectedClass;
+        public int? SelectedTrackId
+        {
+            get
+            {
+                int trackId = Volatile.Read(ref _selectedTrackId);
+                return trackId >= 0 ? trackId : null;
+            }
+            private set => Volatile.Write(ref _selectedTrackId, value ?? -1);
+        }
+        public string? SelectedClass
+        {
+            get => Volatile.Read(ref _selectedClass);
+            private set => Volatile.Write(ref _selectedClass, value);
+        }
         public float ErrorX { get; private set; }
         public float ErrorY { get; private set; }
         public float TargetVelocityX { get; private set; }
         public float TargetVelocityY { get; private set; }
         public float RX { get; private set; }
         public float RY { get; private set; }
-        public int AcquisitionFramesRemaining => _gamepadAssistController.AcquisitionFramesRemaining;
+        public double AcquisitionBoostRemainingMs => _gamepadAssistController.AcquisitionBoostRemainingMs;
         public bool PhysicalControllerConnected { get; private set; }
 
         public bool GamepadConnected => _gamepadOutput?.IsConnected ?? false;
@@ -220,7 +226,17 @@ namespace Aimmy2.AILogic
         }
 
         public Task<bool> InitializationTask { get; }
-        public bool IsLoaded => _onnxModel != null && _outputNames != null;
+        public bool IsLoaded => _activeModelLease != null && _modelService.HasActiveModel;
+
+        private InferenceSession? CurrentInferenceSession =>
+            _benchmarkMode && _benchmarkModelSession != null
+                ? _benchmarkModelSession
+                : _activeModelLease?.Session;
+
+        private IReadOnlyList<string>? CurrentOutputNames =>
+            _benchmarkMode && _benchmarkOutputNames != null
+                ? _benchmarkOutputNames
+                : _activeModelLease?.OutputNames;
         #endregion Variables
 
         #region Benchmarking
@@ -363,11 +379,14 @@ namespace Aimmy2.AILogic
         {
             try
             {
-                OnnxModelLoadResult loadedModel = OnnxModelSessionFactory.Load(modelPath, useDirectML);
-                _onnxModel = loadedModel.Session;
-                _outputNames = loadedModel.OutputNames;
+                if (!_modelService.TryHotSwap(modelPath, useDirectML, out string? loadError))
+                    throw new InvalidOperationException(loadError ?? "Model load failed.");
 
-                // Validate the onnx model output shape (ensure model is OnnxV8)
+                _activeModelLease?.Dispose();
+                _activeModelLease = _modelService.AcquireActive()
+                    ?? throw new InvalidOperationException("Model service activated a model but did not provide a session lease.");
+                _activeManifest = _activeModelLease.Manifest;
+
                 if (!ValidateOnnxShape())
                 {
                     DisposeLoadedModel();
@@ -404,17 +423,19 @@ namespace Aimmy2.AILogic
 
         private void DisposeLoadedModel()
         {
-            _onnxModel?.Dispose();
-            _onnxModel = null;
-            _outputNames = null;
+            _activeModelLease?.Dispose();
+            _activeModelLease = null;
+            _modelService.ClearActive();
+            _activeManifest = null;
         }
 
         private bool ValidateOnnxShape()
         {
-            if (_onnxModel != null)
+            InferenceSession? session = CurrentInferenceSession;
+            if (session != null)
             {
-                var inputMetadata = _onnxModel.InputMetadata;
-                var outputMetadata = _onnxModel.OutputMetadata;
+                var inputMetadata = session.InputMetadata;
+                var outputMetadata = session.OutputMetadata;
 
                 Log(LogLevel.Info, "=== Model Metadata ===");
                 Log(LogLevel.Info, "Input Metadata:");
@@ -506,12 +527,29 @@ namespace Aimmy2.AILogic
                     ImageSizeUpdated?.Invoke(fixedInputSize);
                     LoadClasses();
 
-                    // For static models, validate the expected shape
-                    var expectedShape = new int[] { 1, 4 + NUM_CLASSES, NUM_DETECTIONS };
-                    if (!outputMetadata.Values.All(metadata => metadata.Dimensions.SequenceEqual(expectedShape)))
+                    // Validate against the manifest-declared decoder contract. Pose models add
+                    // three channels per keypoint and must not be rejected by the old detector-only shape.
+                    bool validOutput = false;
+                    string validationError = "No output tensors were present.";
+                    foreach (var metadata in outputMetadata.Values)
+                    {
+                        if (ModelOutputShapeValidator.TryValidate(
+                            metadata.Dimensions,
+                            NUM_CLASSES,
+                            NUM_DETECTIONS,
+                            _activeManifest,
+                            out string error))
+                        {
+                            validOutput = true;
+                            break;
+                        }
+                        validationError = error;
+                    }
+
+                    if (!validOutput)
                     {
                         Log(LogLevel.Error,
-                            $"Output shape does not match the expected shape of {string.Join("x", expectedShape)}.\nThis model will not work with Aimmy, please use an YOLOv8 model converted to ONNXv8.",
+                            $"Model output does not match the active decoder contract: {validationError}",
                             true, 10000);
                         return false;
                     }
@@ -530,12 +568,13 @@ namespace Aimmy2.AILogic
 
         private void LoadClasses()
         {
-            if (_onnxModel == null) return;
+            InferenceSession? session = CurrentInferenceSession;
+            if (session == null) return;
             _modelClasses.Clear();
 
             try
             {
-                var metadata = _onnxModel.ModelMetadata;
+                var metadata = session.ModelMetadata;
 
                 if (metadata != null &&
                     metadata.CustomMetadataMap.TryGetValue("names", out string? value) &&
@@ -573,12 +612,12 @@ namespace Aimmy2.AILogic
 
             try
             {
-                string modelDirectory = Path.GetDirectoryName(_modelPath) ?? ".";
-                _activeManifest = ModelService.LoadOrCreateManifest(modelDirectory, _modelPath, _modelClasses);
+                _activeManifest = _activeModelLease?.Manifest
+                    ?? ModelManifest.CreateFallback("unknown", "unknown", _modelClasses);
             }
             catch (Exception ex)
             {
-                Log(LogLevel.Warning, $"Could not load or generate model manifest: {ex.Message}");
+                Log(LogLevel.Warning, $"Could not apply model manifest: {ex.Message}");
                 _activeManifest = ModelManifest.CreateFallback("unknown", "unknown", _modelClasses);
             }
 
@@ -591,7 +630,18 @@ namespace Aimmy2.AILogic
         /// </summary>
         private void LoadCompanionModels()
         {
-            if (_activeManifest == null) return;
+            // A model hot-swap must never retain a companion session from the previous bundle when
+            // the new manifest omits that model. Reset first, then load the new bundle fail-closed.
+            _gruAimHint = null;
+            _temporalPredictor.Unload();
+            _calibrationMlp.Unload();
+            MouseManager.ClearNeuralMovementIf(_movementMlp);
+            _movementMlp.Unload();
+            _movementMlp.SetContext(null);
+
+            if (_activeManifest == null)
+                return;
+
             string modelDir = Path.GetDirectoryName(_modelPath) ?? ".";
 
             TryLoadCompanion(_activeManifest.TemporalModelPath, modelDir,
@@ -603,14 +653,16 @@ namespace Aimmy2.AILogic
             TryLoadCompanion(_activeManifest.MovementModelPath, modelDir,
                 path =>
                 {
+                    // Controlled TestArena/accessibility-pointing research model only. Loading it
+                    // does not connect vision observations to the legacy live mouse path.
                     _movementMlp.Load(path);
-                    MouseManager.NeuralMovement = _movementMlp;
-                }, "movement MLP");
+                }, "movement MLP (research only)");
         }
 
         private void TryLoadCompanion(string? relativePath, string modelDir, Action<string> loader, string name)
         {
-            if (relativePath == null) return;
+            if (string.IsNullOrWhiteSpace(relativePath))
+                return;
             string fullPath = Path.IsPathRooted(relativePath)
                 ? relativePath
                 : Path.Combine(modelDir, relativePath);
@@ -650,7 +702,6 @@ namespace Aimmy2.AILogic
             AimProcessingDecisions.ShouldProcessFrame(
                 AimSettings.AimAssist,
                 AimSettings.ShowDetectedPlayer,
-                AimSettings.AutoTrigger,
                 AimSettings.GamepadAssist);
 
         private async Task AiLoopAsync(CancellationToken cancellationToken)
@@ -719,7 +770,12 @@ namespace Aimmy2.AILogic
                                     Prediction? closestPrediction;
                                     using (Benchmark("GetClosestPrediction"))
                                     {
-                                        _frameMailbox.TryTake(out CapturedFrame? capturedFrame);
+                                        if (!_frameMailbox.TryTake(out CapturedFrame? capturedFrame) || capturedFrame == null)
+                                        {
+                                            await Task.Delay(1, cancellationToken);
+                                            continue;
+                                        }
+
                                         await _inferenceGate.WaitAsync(cancellationToken);
                                         try
                                         {
@@ -737,11 +793,6 @@ namespace Aimmy2.AILogic
                                         continue;
                                     }
 
-                                    using (Benchmark("AutoTrigger"))
-                                    {
-                                        await AutoTrigger();
-                                    }
-
                                     using (Benchmark("CalculateCoordinates"))
                                     {
                                         CalculateCoordinates(DetectedPlayerOverlay, closestPrediction, _scaleX, _scaleY);
@@ -754,10 +805,6 @@ namespace Aimmy2.AILogic
 
                                     totalTime += stopwatch.ElapsedMilliseconds;
                                     iterationCount++;
-                                    FrameAge = stopwatch.Elapsed.TotalMilliseconds;
-                                    CaptureFps = stopwatch.Elapsed.TotalMilliseconds > 0
-                                        ? 1000.0 / stopwatch.Elapsed.TotalMilliseconds
-                                        : CaptureFps;
                                 }
                                 else
                                 {
@@ -800,8 +847,26 @@ namespace Aimmy2.AILogic
             }
         }
 
-        // Full FOV scan every N ROI frames so new targets are never missed.
-        private const int RoiRefreshInterval = 8;
+        private void RecordCaptureCompleted(DateTime completedAt)
+        {
+            lock (_captureMetricsLock)
+            {
+                _captureCompletionWindow.Enqueue(completedAt);
+                DateTime cutoff = completedAt.AddSeconds(-1);
+                while (_captureCompletionWindow.Count > 0 && _captureCompletionWindow.Peek() < cutoff)
+                    _captureCompletionWindow.Dequeue();
+
+                if (_captureCompletionWindow.Count >= 2)
+                {
+                    double seconds = (completedAt - _captureCompletionWindow.Peek()).TotalSeconds;
+                    if (seconds > 0)
+                        CaptureFps = (_captureCompletionWindow.Count - 1) / seconds;
+                }
+            }
+        }
+
+        // Full FOV refresh is time-based so ROI behaviour does not change with capture FPS.
+        private const double RoiRefreshIntervalMs = 133.0;
         // ROI box = max(target_w, target_h) * this factor, giving room for movement.
         private const float RoiPaddingFactor = 4f;
         // Smallest ROI we'll bother capturing — below this the upscale adds no info.
@@ -829,17 +894,17 @@ namespace Aimmy2.AILogic
                     Rectangle detectionBox;
                     float captureToModelScale;
 
-                    int? lockedTrack = SelectedTrackId;
-                    RectangleF lastBox = LastTargetScreenBox;
-                    bool roiFrame = frameId % RoiRefreshInterval != 0;
+                    RoiTargetSnapshot? roiTarget = Volatile.Read(ref _roiTargetSnapshot);
+                    RectangleF lastBox = roiTarget?.BoundingBox ?? RectangleF.Empty;
+                    DateTime captureDecisionTime = DateTime.UtcNow;
+                    bool roiFrame = (captureDecisionTime - _lastFullFovCaptureAt).TotalMilliseconds < RoiRefreshIntervalMs;
 
-                    if (roiFrame && lockedTrack.HasValue && lastBox.Width > 0)
+                    if (roiFrame && roiTarget != null && lastBox.Width > 0 && lastBox.Height > 0)
                     {
-                        // Predict where target will be using velocity hint.
-                        float cx = lastBox.X + lastBox.Width * 0.5f
-                                   + TargetVelocityX * (IMAGE_SIZE / 2f) * 0.016f;
-                        float cy = lastBox.Y + lastBox.Height * 0.5f
-                                   + TargetVelocityY * (IMAGE_SIZE / 2f) * 0.016f;
+                        // Keep ROI centred on one atomically-published selected-track snapshot. Temporal
+                        // projection is owned by the tracker/temporal model; capture does not invent lead.
+                        float cx = lastBox.X + lastBox.Width * 0.5f;
+                        float cy = lastBox.Y + lastBox.Height * 0.5f;
 
                         int roiSize = Math.Clamp(
                             (int)(Math.Max(lastBox.Width, lastBox.Height) * RoiPaddingFactor),
@@ -869,6 +934,7 @@ namespace Aimmy2.AILogic
                         }
                         captureToModelScale = captureSize / (float)IMAGE_SIZE;
                         detectionBox = CreateDetectionBox(true, captureSize);
+                        _lastFullFovCaptureAt = captureDecisionTime;
                     }
 
                     var captureStart = DateTime.UtcNow;
@@ -878,11 +944,14 @@ namespace Aimmy2.AILogic
                     var captureEnd = DateTime.UtcNow;
 
                     if (bmp != null)
+                    {
                         _frameMailbox.Post(new CapturedFrame(
                             frameId,
                             captureStart, captureEnd,
                             detectionBox.Width, detectionBox.Height,
                             detectionBox, bmp, captureToModelScale));
+                        RecordCaptureCompleted(captureEnd);
+                    }
 
                     await Task.Yield();
                 }
@@ -898,71 +967,6 @@ namespace Aimmy2.AILogic
         }
 
         #region AI Loop Functions
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private async Task AutoTrigger()
-        {
-            if (_suppressOutputActions)
-                return;
-
-            // if auto trigger is disabled,
-            // or if the aim keybinds are not held,
-            // or if constant AI tracking is enabled,
-            // we check for spray release and return
-            if (!AimProcessingDecisions.ShouldAttemptAutoTrigger(
-                AimSettings.AutoTrigger,
-                InputBindingManager.IsHoldingBinding("Aim Keybind"),
-                InputBindingManager.IsHoldingBinding("Second Aim Keybind"),
-                AimSettings.ConstantAiTracking))
-            {
-                CheckSprayRelease();
-                return;
-            }
-
-
-            if (AimSettings.SprayMode)
-            {
-                await MouseManager.DoTriggerClick(LastDetectionBox);
-                return;
-            }
-
-
-            if (AimSettings.CursorCheck)
-            {
-                var mousePos = WinAPICaller.GetCursorPosition();
-
-                if (!DisplayManager.IsPointInCurrentDisplay(new System.Windows.Point(mousePos.X, mousePos.Y)))
-                {
-                    return;
-                }
-
-                if (LastDetectionBox.Contains(mousePos.X, mousePos.Y))
-                {
-                    await MouseManager.DoTriggerClick(LastDetectionBox);
-                }
-            }
-            else
-            {
-                await MouseManager.DoTriggerClick();
-            }
-
-            if (!AimSettings.AimAssist || !AimSettings.ShowDetectedPlayer) return;
-
-        }
-        private void CheckSprayRelease()
-        {
-            if (!AimSettings.SprayMode) return;
-
-            // if auto trigger is disabled, we reset the spray state
-            // if the aim keybinds are not held, we reset the spray state
-            if (!AimProcessingDecisions.ShouldKeepSprayActive(
-                AimSettings.AutoTrigger,
-                InputBindingManager.IsHoldingBinding("Aim Keybind"),
-                InputBindingManager.IsHoldingBinding("Second Aim Keybind")))
-            {
-                MouseManager.ResetSprayState();
-            }
-        }
 
         private async void UpdateFOV()
         {
@@ -1119,34 +1123,26 @@ namespace Aimmy2.AILogic
 
             var rect = closestPrediction.Rectangle;
 
-            // Pose keypoint aim point takes priority: direct body-landmark coordinates are more
-            // accurate than any box-fraction heuristic. Fall through to box heuristics when no
-            // pose model is loaded or the best keypoint is not visible.
-            var kp = closestPrediction.Keypoints?.BestAimPoint;
-            if (kp.HasValue)
+            // Legacy mouse output intentionally retains its original capture-local box semantics.
+            // Pose keypoints are absolute desktop coordinates and are resolved by
+            // ObservationPointResolver for the perception/accessibility pipeline. Mixing those
+            // coordinate spaces here caused double scaling when ROI capture was active.
+            if (AimSettings.UseXAxisPercentageAdjustment)
             {
-                detectedX = (int)(kp.Value.X * scaleX + XOffset);
-                detectedY = (int)(kp.Value.Y * scaleY + YOffset);
+                detectedX = (int)((rect.X + (rect.Width * (XOffsetPercentage / 100))) * scaleX);
             }
             else
             {
-                if (AimSettings.UseXAxisPercentageAdjustment)
-                {
-                    detectedX = (int)((rect.X + (rect.Width * (XOffsetPercentage / 100))) * scaleX);
-                }
-                else
-                {
-                    detectedX = (int)((rect.X + rect.Width / 2) * scaleX + XOffset);
-                }
+                detectedX = (int)((rect.X + rect.Width / 2) * scaleX + XOffset);
+            }
 
-                if (AimSettings.UseYAxisPercentageAdjustment)
-                {
-                    detectedY = (int)((rect.Y + rect.Height - (rect.Height * (YOffsetPercentage / 100))) * scaleY + YOffset);
-                }
-                else
-                {
-                    detectedY = CalculateDetectedY(scaleY, YOffset, closestPrediction);
-                }
+            if (AimSettings.UseYAxisPercentageAdjustment)
+            {
+                detectedY = (int)((rect.Y + rect.Height - (rect.Height * (YOffsetPercentage / 100))) * scaleY + YOffset);
+            }
+            else
+            {
+                detectedY = CalculateDetectedY(scaleY, YOffset, closestPrediction);
             }
         }
 
@@ -1263,7 +1259,11 @@ namespace Aimmy2.AILogic
             }
             else
             {
-                // Fallback: capture synchronously (benchmark mode, or capture loop not yet running).
+                // Production capture has a single owner: CaptureLoopAsync. Synchronous capture is
+                // reserved for the explicit benchmark path so capture cannot re-enter DXGI from two loops.
+                if (!_benchmarkMode)
+                    return null;
+
                 bool useDynamicFov = AimSettings.DynamicFovEnabled;
                 int captureSize = IMAGE_SIZE;
                 if (useDynamicFov)
@@ -1322,11 +1322,20 @@ namespace Aimmy2.AILogic
                     inputArray.AsSpan().CopyTo(_reusableTensor.Buffer.Span);
                 }
 
-                if (_onnxModel == null) return null;
+                InferenceSession? modelSession = CurrentInferenceSession;
+                IReadOnlyList<string>? modelOutputNames = CurrentOutputNames;
+                if (modelSession == null || modelOutputNames == null)
+                    return null;
+
+                DateTime inferenceStartedAt = DateTime.UtcNow;
+                FrameAge = capturedFrame != null
+                    ? Math.Max(0, (inferenceStartedAt - capturedFrame.CaptureCompletedAt).TotalMilliseconds)
+                    : 0;
+
                 var inferenceStopwatch = Stopwatch.StartNew();
                 using (Benchmark("ModelInference"))
                 {
-                    results = _onnxModel.Run(_reusableInputs, _outputNames, _modeloptions);
+                    results = modelSession.Run(_reusableInputs, modelOutputNames, _modeloptions);
                     _lastPredictionRanInference = true;
                     outputTensor = results[0].AsTensor<float>();
                 }
@@ -1355,7 +1364,10 @@ namespace Aimmy2.AILogic
                 List<Prediction> KDPredictions;
                 using (Benchmark("PrepareKDTreeData"))
                 {
-                    float minConfidence = AimSettings.MinimumConfidence;
+                    float productConfidenceThreshold = AimSettings.MinimumConfidence;
+                    float minConfidence = (_calibrationMlp.IsLoaded || AimSettings.DetectionLogging)
+                        ? Math.Min(productConfidenceThreshold, 0.05f)
+                        : productConfidenceThreshold;
                     string selectedClass = AimSettings.TargetClass;
 
                     var cursorScreenPos = WinAPICaller.GetCursorPosition();
@@ -1390,7 +1402,8 @@ namespace Aimmy2.AILogic
                         cursorLocalPosition,
                         (float)AimSettings.CursorExclusionRadius,
                         captureToModelScale,
-                        keypointCount);
+                        keypointCount,
+                        _activeManifest?.KeypointVisibilityIsLogit ?? false);
                 }
 
                 // Build calibration samples from raw confidence BEFORE overwriting it,
@@ -1399,23 +1412,27 @@ namespace Aimmy2.AILogic
                 if (KDPredictions.Count > 0)
                 {
                     float frameAgeMs = (float)FrameAge;
-                    float imF = IMAGE_SIZE;
+                    float sw = Math.Max(ScreenWidth, 1);
+                    float sh = Math.Max(ScreenHeight, 1);
 
                     List<CalibrationSampleInput>? logSamples = AimSettings.DetectionLogging
                         ? new List<CalibrationSampleInput>(KDPredictions.Count) : null;
 
                     foreach (var p in KDPredictions)
                     {
-                        float cx = (p.Rectangle.X + p.Rectangle.Width  * 0.5f) / imF;
-                        float cy = (p.Rectangle.Y + p.Rectangle.Height * 0.5f) / imF;
-                        float wn = p.Rectangle.Width  / imF;
-                        float hn = p.Rectangle.Height / imF;
+                        RectangleF screenRect = p.ScreenRectangle.Width > 0 ? p.ScreenRectangle : p.Rectangle;
+                        float cx = Math.Clamp((screenRect.X + screenRect.Width * 0.5f - ScreenLeft) / sw, 0f, 1f);
+                        float cy = Math.Clamp((screenRect.Y + screenRect.Height * 0.5f - ScreenTop) / sh, 0f, 1f);
+                        float wn = Math.Clamp(screenRect.Width / sw, 0f, 1f);
+                        float hn = Math.Clamp(screenRect.Height / sh, 0f, 1f);
 
                         if (logSamples != null)
                         {
                             float pq = CalibrationMlp.ComputePoseQualityStatic(p.Keypoints);
                             logSamples.Add(new CalibrationSampleInput
                             {
+                                FrameId    = capturedFrame?.FrameId ?? -1,
+                                DetectionIndex = logSamples.Count,
                                 RawConf    = p.Confidence,
                                 WNorm      = wn, HNorm = hn,
                                 CxNorm     = cx, CyNorm = cy,
@@ -1434,11 +1451,21 @@ namespace Aimmy2.AILogic
                         _trackLogger.EnsureSessionActive(LogsRoot);
                         _trackLogger.LogCalibrationSamples(logSamples);
                     }
+
+                    // Candidate collection/calibration runs at a low fixed floor. Product selection
+                    // still uses the configured threshold, now against calibrated confidence.
+                    float finalThreshold = AimSettings.MinimumConfidence;
+                    KDPredictions = KDPredictions
+                        .Where(p => p.Confidence >= finalThreshold)
+                        .ToList();
                 }
 
                 using (Benchmark("GamepadAssistPipeline"))
                 {
-                    RunGamepadAssistPipeline(KDPredictions, detectionBox);
+                    RunGamepadAssistPipeline(
+                        KDPredictions,
+                        detectionBox,
+                        capturedFrame?.CaptureCompletedAt ?? DateTime.UtcNow);
                 }
 
                 if (KDPredictions.Count == 0)
@@ -1522,7 +1549,10 @@ namespace Aimmy2.AILogic
                 mouseOnCurrentDisplay);
         }
 
-        private void RunGamepadAssistPipeline(List<Prediction> predictions, Rectangle detectionBox)
+        private void RunGamepadAssistPipeline(
+            List<Prediction> predictions,
+            Rectangle detectionBox,
+            DateTime observationTime)
         {
             if (_suppressOutputActions)
                 return;
@@ -1530,12 +1560,11 @@ namespace Aimmy2.AILogic
             DateTime now = DateTime.UtcNow;
             double dtSeconds = Math.Clamp((now - _lastGamepadUpdate).TotalSeconds, 0, 1.0);
             _lastGamepadUpdate = now;
-            _gamepadFrameCounter++;
 
-            // Auto-detect physical controller: scan all 4 XInput slots every ~5 seconds
-            // so the app picks up a controller plugged in after launch without any manual config.
-            if (_gamepadFrameCounter % 150 == 1)
+            // Controller discovery is time based; inference FPS must not change reconnect cadence.
+            if ((now - _lastPhysicalGamepadScan).TotalSeconds >= 5.0)
             {
+                _lastPhysicalGamepadScan = now;
                 uint found = _physicalGamepadReader.FindFirstConnectedIndex();
                 if (_physicalGamepadReader.Read(found).Connected)
                     PhysicalGamepadIndex = found;
@@ -1545,11 +1574,19 @@ namespace Aimmy2.AILogic
             // If the average is consistently high (>5) the threshold is too low — too many false
             // positives bleed through. If consistently low (<1) the threshold is too aggressive.
             // Nudge MinimumConfidence by 0.01 per frame in the appropriate direction.
-            _detectionCountWindow.Enqueue(predictions.Count);
-            while (_detectionCountWindow.Count > DetectionWindowSize)
-                _detectionCountWindow.Dequeue();
+            if (!_calibrationMlp.IsLoaded && !AimSettings.DetectionLogging)
+            {
+                _detectionCountWindow.Enqueue(predictions.Count);
+                while (_detectionCountWindow.Count > DetectionWindowSize)
+                    _detectionCountWindow.Dequeue();
+            }
+            else
+            {
+                _detectionCountWindow.Clear();
+            }
 
-            if (_detectionCountWindow.Count == DetectionWindowSize)
+            if (!_calibrationMlp.IsLoaded && !AimSettings.DetectionLogging &&
+                _detectionCountWindow.Count == DetectionWindowSize)
             {
                 double avgDetections = _detectionCountWindow.Average();
                 // MinimumConfidence is derived from the "AI Minimum Confidence" slider (0-100).
@@ -1569,17 +1606,26 @@ namespace Aimmy2.AILogic
             GamepadAssistEnabled = AimSettings.GamepadAssist;
 
             Dictionary<int, SemanticRole> classRoles = _activeManifest?.BuildClassRoleMap()
-                ?? _modelClasses.Keys.ToDictionary(id => id, _ => SemanticRole.Enemy);
+                ?? _modelClasses.Keys.ToDictionary(id => id, _ => SemanticRole.Unknown);
 
-            IReadOnlyList<Track> tracks = _trackManager.Update(predictions, classRoles, now);
+            _trackManager.ScreenWidth = ScreenWidth;
+            _trackManager.ScreenHeight = ScreenHeight;
+            _trackManager.ScreenLeft = ScreenLeft;
+            _trackManager.ScreenTop = ScreenTop;
+
+            // Tracking motion belongs to the frame observation timestamp, not to the later
+            // processing time after capture/inference latency. Selection age still uses `now`.
+            IReadOnlyList<Track> tracks = _trackManager.Update(predictions, classRoles, observationTime);
 
             PlayerDetections = _trackManager.PlayerCount;
             EnemyDetections = _trackManager.EnemyCount;
             FriendlyDetections = _trackManager.FriendlyCount;
             ActiveTracks = tracks.Count;
 
-            var screenCenter = new PointF(IMAGE_SIZE / 2f, IMAGE_SIZE / 2f);
-            float normalizationRadius = IMAGE_SIZE / 2f;
+            var screenCenter = new PointF(
+                ScreenLeft + ScreenWidth / 2f,
+                ScreenTop + ScreenHeight / 2f);
+            float normalizationRadius = Math.Max(1f, Math.Min(ScreenWidth, ScreenHeight) / 2f);
 
             // Use the Y Offset % slider so gamepad and mouse paths aim at the same spot.
             // Manifest can pin a fraction for models that need it (e.g. head-only).
@@ -1593,6 +1639,7 @@ namespace Aimmy2.AILogic
                 GamepadFixedTrackId,
                 screenCenter,
                 normalizationRadius,
+                now,
                 aimPointFraction);
 
             SelectedTrackId = selection.SelectedTrack?.TrackId;
@@ -1602,40 +1649,54 @@ namespace Aimmy2.AILogic
             TargetVelocityX = selection.TargetVelocityX;
             TargetVelocityY = selection.TargetVelocityY;
 
-            // GRU temporal prediction: when the locked track's ring buffer is full,
-            // compute next-frame predicted position and store it for HandlePredictions.
-            if (_temporalPredictor.IsLoaded && selection.SelectedTrack != null)
+            // Publish the selected track atomically for the independent capture task. A null
+            // selection immediately clears ROI ownership and generic movement-model context.
+            if (selection.SelectedTrack != null)
             {
-                var norm = _activeManifest?.GruNorm ?? new GruNormConstants();
+                Volatile.Write(ref _roiTargetSnapshot, new RoiTargetSnapshot(
+                    selection.SelectedTrack.TrackId,
+                    selection.SelectedTrack.BoundingBox,
+                    selection.SelectedTrack.LastSeen));
+            }
+            else
+            {
+                Volatile.Write(ref _roiTargetSnapshot, null);
+            }
+
+            _movementMlp.SetContext(selection.SelectedTrack?.TrackId);
+
+            // Clear first so an exception/invalid bundle can never leave the previous track's hint live.
+            _gruAimHint = null;
+            if (_temporalPredictor.IsLoaded &&
+                selection.SelectedTrack != null &&
+                _activeManifest?.GruNorm is GruNormConstants norm)
+            {
                 var g = _temporalPredictor.Predict(selection.SelectedTrack.RingBuffer, norm);
                 if (g.HasValue)
                 {
                     float sw = Math.Max(ScreenWidth, 1);
                     float sh = Math.Max(ScreenHeight, 1);
                     PointF cur = selection.SelectedTrack.Center;
-                    float predX = (cur.X / sw + g.Value.DeltaCxNorm * 0.5f) * sw;
-                    float predY = (cur.Y / sh + g.Value.DeltaCyNorm * 0.5f) * sh;
+                    float curNormX = (cur.X - ScreenLeft) / sw;
+                    float curNormY = (cur.Y - ScreenTop) / sh;
+                    float predX = ScreenLeft + (curNormX +
+                        TemporalPredictor.ConvertModelDeltaToScreenFraction(g.Value.DeltaCxNorm)) * sw;
+                    float predY = ScreenTop + (curNormY +
+                        TemporalPredictor.ConvertModelDeltaToScreenFraction(g.Value.DeltaCyNorm)) * sh;
                     selection.SelectedTrack.GruPredictedCenter = (predX, predY);
                     _gruAimHint = (predX, predY);
                 }
                 else
                 {
                     selection.SelectedTrack.GruPredictedCenter = null;
-                    _gruAimHint = null;
                 }
             }
-            else
-            {
-                _gruAimHint = null;
-            }
 
-            // Expose last target size to MouseManager for the neural movement MLP.
-            if (selection.SelectedTrack != null)
-            {
-                MouseManager.LastTargetSizePixels = Math.Max(
+            MouseManager.LastTargetSizePixels = selection.SelectedTrack != null
+                ? Math.Max(
                     selection.SelectedTrack.BoundingBox.Width,
-                    selection.SelectedTrack.BoundingBox.Height);
-            }
+                    selection.SelectedTrack.BoundingBox.Height)
+                : 0f;
 
             // Track logger: detect expired tracks and flush their ring buffers to disk.
             if (AimSettings.DetectionLogging)
@@ -1652,7 +1713,7 @@ namespace Aimmy2.AILogic
             UpdateNeuralStatus();
 
             bool hasTarget = selection.SelectedTrack != null;
-            int observationAge = hasTarget ? selection.SelectedTrack!.FramesSinceLastSeen : int.MaxValue;
+            double observationAgeMs = hasTarget ? selection.ObservationAgeMs : double.PositiveInfinity;
             float confidence = hasTarget ? selection.SelectedTrack!.Confidence : 0f;
 
             var (assistRx, assistRy) = _gamepadAssistController.Update(
@@ -1662,25 +1723,12 @@ namespace Aimmy2.AILogic
                 selection.TargetVelocityX,
                 selection.TargetVelocityY,
                 confidence,
-                observationAge,
+                observationAgeMs,
                 dtSeconds,
                 trackId: selection.SelectedTrack?.TrackId);
 
             PhysicalGamepadState physicalState = _physicalGamepadReader.Read(PhysicalGamepadIndex);
             PhysicalControllerConnected = physicalState.Connected;
-
-            // RT-triggered recoil compensation: when the player is firing (right trigger held),
-            // add a small upward correction to counteract muzzle climb. Scales with trigger depth
-            // so partial pulls get proportional help. Value is negative Y because up = negative Y.
-            // Strength is normalised: RecoilStrengthMouse (pixels/frame) ÷ 25 maps to stick space.
-            const float RecoilTriggerThreshold = 0.15f;
-            if (physicalState.Connected && physicalState.RightTrigger > RecoilTriggerThreshold)
-            {
-                float recoilStrengthStick = Math.Clamp(_recoilCompensator.Strength / 25f, 0f, 0.5f);
-                float recoilScale = (physicalState.RightTrigger - RecoilTriggerThreshold) / (1f - RecoilTriggerThreshold);
-                assistRy -= recoilStrengthStick * recoilScale;
-                assistRy = Math.Clamp(assistRy, -1f, 1f);
-            }
 
             var (rx, ry) = StickBlender.Blend(
                 physicalState.Connected ? physicalState.RightStickX : 0f,
@@ -1693,51 +1741,14 @@ namespace Aimmy2.AILogic
 
             if (GamepadAssistEnabled && _gamepadOutput != null)
             {
-                // Auto-trigger: when locked on target and aligned, press RT to fire.
-                const float AutoTriggerThreshold = 0.15f;
-                float? rtOverride = null;
-                if (AimSettings.AutoTrigger && hasTarget &&
-                    Math.Abs(selection.ErrorX) < AutoTriggerThreshold &&
-                    Math.Abs(selection.ErrorY) < AutoTriggerThreshold)
-                    rtOverride = 1.0f;
-
-                // Single atomic report: passthrough + right-stick override in one USB packet.
-                // Previously two separate SubmitReport() calls caused per-frame button-state
-                // jitter between the two packets at the game's input layer.
-                _gamepadOutput.SetFullState(physicalState, rx, ry, rtOverride);
+                // Preserve the player's trigger/buttons exactly. Vision does not synthesize firing
+                // and the perception pipeline does not apply recoil compensation to controller output.
+                _gamepadOutput.SetFullState(physicalState, rx, ry, rtOverride: null);
             }
 
-            // ── Mouse aim assist ──────────────────────────────────────────────────────
-            // Only active when AimAssist is OFF — when AimAssist is ON, HandleAim() runs
-            // MouseManager.MoveCrosshair() and both paths firing simultaneously would
-            // double-move the cursor. With AimAssist OFF, this provides a lightweight
-            // alternative mouse-aim path using the gamepad PID error signal.
-            bool mouseAimActive = MouseAimEnabled &&
-                !AimSettings.AimAssist &&
-                (AimSettings.ConstantAiTracking ||
-                 InputBindingManager.IsHoldingBinding("Aim Keybind") ||
-                 InputBindingManager.IsHoldingBinding("Second Aim Keybind"));
-
-            if (mouseAimActive && hasTarget)
-            {
-                _mouseAimOutput.Sensitivity = MouseAimSensitivity;
-                _mouseAimOutput.Move(selection.ErrorX, selection.ErrorY);
-            }
-            else if (!hasTarget)
-            {
-                _mouseAimOutput.Reset();
-            }
-
-            // ── Recoil compensation (mouse) ───────────────────────────────────────────
-            // Fires when left mouse button is held (PC mouse players) OR right trigger
-            // is held past threshold on a physical controller — whichever applies.
-            bool lmbHeld = IsLmbDown();
-            bool rtHeld = physicalState.Connected && physicalState.RightTrigger > 0.15f;
-            bool isFiring = lmbHeld || rtHeld;
-
-            var (rcDx, rcDy) = _recoilCompensator.Update(isFiring, (float)(dtSeconds * 1000.0));
-            if (rcDx != 0 || rcDy != 0)
-                _mouseAimOutput.ApplyRaw(rcDx, rcDy);
+            // The newer tracking/perception pipeline no longer owns a second mouse-output or recoil
+            // path. Legacy Aimmy mouse behaviour remains isolated in HandleAim(); duplicating output
+            // here caused two independent movement/recoil systems to run from one inference result.
         }
 
         private void UpdateNeuralStatus()
@@ -1751,7 +1762,7 @@ namespace Aimmy2.AILogic
             string log  = AimSettings.DetectionLogging
                 ? $"Log ✓ ({_trackLogger.TotalCalibrationSamples} det / {_trackLogger.TotalTracksFlushed} trk)"
                 : "Log ✗";
-            NeuralStatusText = $"{pose}   {gru}   {cal}   {mov}\n{log}";
+            Volatile.Write(ref _neuralStatusText, $"{pose}   {gru}   {cal}   {mov}\n{log}");
         }
 
         private void UpdateDetectionBox(Prediction target, Rectangle detectionBox)
@@ -1776,8 +1787,6 @@ namespace Aimmy2.AILogic
 
             int originalImageSize = IMAGE_SIZE;
             int originalDetections = NUM_DETECTIONS;
-            InferenceSession? originalSession = _onnxModel;
-            List<string>? originalOutputNames = _outputNames;
             bool originalUsingDirectML = _usingDirectML;
             bool originalSizeChangePending;
 
@@ -1821,10 +1830,7 @@ namespace Aimmy2.AILogic
                         $"Preparing {size}px model"));
 
                     ConfigureBenchmarkImageSize(size);
-                    if (i > 0 || size != originalImageSize)
-                    {
-                        ReloadBenchmarkModelSession(originalSession);
-                    }
+                    ReloadBenchmarkModelSession();
 
                     progress?.Report(new PerformanceBenchmarkProgress(
                         i + 1,
@@ -1871,8 +1877,6 @@ namespace Aimmy2.AILogic
                         RestoreBenchmarkState(
                             originalImageSize,
                             originalDetections,
-                            originalSession,
-                            originalOutputNames,
                             originalUsingDirectML);
                     }
                 }
@@ -2011,39 +2015,27 @@ namespace Aimmy2.AILogic
         private void RestoreBenchmarkState(
             int originalImageSize,
             int originalDetections,
-            InferenceSession? originalSession,
-            List<string>? originalOutputNames,
             bool originalUsingDirectML)
         {
-            InferenceSession? benchmarkSession = _onnxModel;
+            _benchmarkModelSession?.Dispose();
+            _benchmarkModelSession = null;
+            _benchmarkOutputNames = null;
+
             ConfigureBenchmarkImageSize(originalImageSize);
-            _onnxModel = originalSession;
-            _outputNames = originalOutputNames;
             _usingDirectML = originalUsingDirectML;
             NUM_DETECTIONS = originalDetections;
 
-            if (!ReferenceEquals(benchmarkSession, originalSession))
-            {
-                benchmarkSession?.Dispose();
-            }
-
-            if (_onnxModel == null || _outputNames == null)
-            {
-                throw new InvalidOperationException("Original model session was unavailable after benchmark.");
-            }
+            if (!IsLoaded)
+                throw new InvalidOperationException("Active model service lease was unavailable after benchmark.");
         }
 
-        private void ReloadBenchmarkModelSession(InferenceSession? preservedSession)
+        private void ReloadBenchmarkModelSession()
         {
-            InferenceSession? previousSession = _onnxModel;
             OnnxModelLoadResult loadedModel = OnnxModelSessionFactory.Load(_modelPath, _usingDirectML);
-            _onnxModel = loadedModel.Session;
-            _outputNames = loadedModel.OutputNames;
-
-            if (!ReferenceEquals(previousSession, preservedSession))
-            {
-                previousSession?.Dispose();
-            }
+            InferenceSession? previousSession = _benchmarkModelSession;
+            _benchmarkModelSession = loadedModel.Session;
+            _benchmarkOutputNames = loadedModel.OutputNames;
+            previousSession?.Dispose();
         }
 
         private async Task<PerformanceBenchmarkSizeResult> RunBenchmarkSampleAsync(
@@ -2280,17 +2272,24 @@ namespace Aimmy2.AILogic
             _frameMailbox.Dispose();
             _reusableInputArray = null;
             _reusableInputs = null;
-            _onnxModel?.Dispose();
+            _benchmarkModelSession?.Dispose();
+            _benchmarkModelSession = null;
+            _benchmarkOutputNames = null;
+            _activeModelLease?.Dispose();
+            _activeModelLease = null;
+            _modelService.Dispose();
             _modeloptions?.Dispose();
             _inferenceGate.Dispose();
             _bitmapBuffer = null;
 
-            // Companion neural networks
+            // Companion neural networks. Clear any optional cross-thread reference before
+            // disposing the underlying session so a reader cannot acquire a newly-disposed instance.
+            MouseManager.ClearNeuralMovementIf(_movementMlp);
+            _movementMlp.SetContext(null);
             _temporalPredictor.Dispose();
             _calibrationMlp.Dispose();
             _movementMlp.Dispose();
-            if (MouseManager.NeuralMovement == _movementMlp)
-                MouseManager.NeuralMovement = null;
+            Volatile.Write(ref _roiTargetSnapshot, null);
 
             // Flush any buffered training data to disk before exit
             _trackLogger.Dispose();

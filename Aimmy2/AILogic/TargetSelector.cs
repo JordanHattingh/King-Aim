@@ -7,24 +7,29 @@ namespace Aimmy2.AILogic
         public Track? SelectedTrack { get; init; }
         public float ErrorX { get; init; }
         public float ErrorY { get; init; }
+
+        /// <summary>Normalized display units per second.</summary>
         public float TargetVelocityX { get; init; }
         public float TargetVelocityY { get; init; }
+        public double ObservationAgeMs { get; init; }
+        public PointF ObservationPoint { get; init; }
+        public ObservationPointSource ObservationPointSource { get; init; } = ObservationPointSource.BoxFallback;
     }
 
     public sealed class TargetSelector
     {
-        private const int DefaultConfirmationFrames = 1;
-
         private int? _currentTrackId;
         private int? _challengerTrackId;
-        private int _challengerStreak;
+        private DateTime? _challengerSince;
 
-        public int ConfirmationFrames { get; set; } = DefaultConfirmationFrames;
+        /// <summary>How long a better challenger must remain best before selection switches.</summary>
+        public double SwitchConfirmationMs { get; set; } = 100.0;
 
-        /// <summary>Max frames of lead applied when target moves at ReferenceVelocity. Scales to zero when stationary.</summary>
-        public float LeadFrames { get; set; } = 1.5f;
-        /// <summary>Pixels/frame at which LeadFrames is applied at full value. Above this speed, lead is capped at 2×LeadFrames.</summary>
-        public float ReferenceVelocity { get; set; } = 8f;
+        /// <summary>Maximum age of a real observation before the track becomes ineligible.</summary>
+        public double MaximumObservationAgeMs { get; set; } = 250.0;
+
+        /// <summary>Required fractional distance improvement. 0.30 means challenger must be at least 30% closer.</summary>
+        public float SwitchAdvantageThreshold { get; set; } = 0.30f;
 
         public TargetSelectionResult Select(
             IReadOnlyList<Track> tracks,
@@ -33,17 +38,22 @@ namespace Aimmy2.AILogic
             int? fixedTrackId,
             PointF screenCenter,
             float normalizationRadius,
+            DateTime now,
             float aimPointFraction = 0.25f)
         {
             ArgumentNullException.ThrowIfNull(tracks);
 
-            var eligible = FilterEligible(tracks, mode, roleFilter, fixedTrackId);
+            var eligible = FilterEligible(
+                tracks,
+                mode,
+                roleFilter,
+                fixedTrackId,
+                now,
+                MaximumObservationAgeMs);
 
             if (eligible.Count == 0)
             {
-                _currentTrackId = null;
-                _challengerTrackId = null;
-                _challengerStreak = 0;
+                ResetSelection();
                 return EmptyResult();
             }
 
@@ -52,97 +62,84 @@ namespace Aimmy2.AILogic
                 .OrderBy(x => x.DistSq)
                 .ToList();
 
-            var best = scored[0].Track;
+            Track best = scored[0].Track;
             Track? current = _currentTrackId.HasValue
                 ? eligible.FirstOrDefault(t => t.TrackId == _currentTrackId.Value)
                 : null;
 
             Track selected;
-
             if (current == null)
             {
                 selected = best;
                 _currentTrackId = selected.TrackId;
-                _challengerTrackId = null;
-                _challengerStreak = 0;
+                ResetChallenger();
             }
             else if (best.TrackId == current.TrackId)
             {
                 selected = current;
-                _challengerTrackId = null;
-                _challengerStreak = 0;
+                ResetChallenger();
             }
             else
             {
                 float currentDistSq = DistanceSq(TrackCenter(current.BoundingBox), screenCenter);
                 float bestDistSq = scored[0].DistSq;
+                float requiredRatio = Math.Clamp(1f - SwitchAdvantageThreshold, 0f, 1f);
+                bool meaningfullyBetter = bestDistSq < currentDistSq * requiredRatio;
 
-                bool meaningfullyBetter = bestDistSq < currentDistSq * 0.7f;
+                if (meaningfullyBetter)
+                {
+                    if (_challengerTrackId != best.TrackId)
+                    {
+                        _challengerTrackId = best.TrackId;
+                        _challengerSince = now;
+                    }
 
-                if (meaningfullyBetter && best.TrackId == _challengerTrackId)
-                {
-                    _challengerStreak++;
-                }
-                else if (meaningfullyBetter)
-                {
-                    _challengerTrackId = best.TrackId;
-                    _challengerStreak = 1;
-                }
-                else
-                {
-                    _challengerTrackId = null;
-                    _challengerStreak = 0;
-                }
+                    double elapsedMs = _challengerSince.HasValue
+                        ? Math.Max(0, (now - _challengerSince.Value).TotalMilliseconds)
+                        : 0;
 
-                if (_challengerStreak >= ConfirmationFrames)
-                {
-                    selected = best;
-                    _currentTrackId = selected.TrackId;
-                    _challengerTrackId = null;
-                    _challengerStreak = 0;
+                    if (elapsedMs >= Math.Max(0, SwitchConfirmationMs))
+                    {
+                        selected = best;
+                        _currentTrackId = selected.TrackId;
+                        ResetChallenger();
+                    }
+                    else
+                    {
+                        selected = current;
+                    }
                 }
                 else
                 {
                     selected = current;
+                    ResetChallenger();
                 }
             }
 
-            // Aim point: vertical fraction of the bounding box (0=top, 0.5=center, 1=bottom).
-            // Full-body models use 0.25 (head/chest). Head-only models use 0.5 (center of head box).
-            float aimX = selected.BoundingBox.X + selected.BoundingBox.Width * 0.5f;
-            float aimY = selected.BoundingBox.Y + selected.BoundingBox.Height * aimPointFraction;
+            ResolvedObservationPoint resolved = ObservationPointResolver.Resolve(selected, aimPointFraction);
+            PointF point = resolved.Point;
 
-            // Dynamic lead: scale lead frames by how fast the target is actually moving.
-            // Stationary targets get zero lead (no phantom offset); fast strafers get up to 2× lead.
-            float velocityMag = MathF.Sqrt(selected.Velocity.X * selected.Velocity.X + selected.Velocity.Y * selected.Velocity.Y);
-            float velocityScale = ReferenceVelocity > 0
-                ? Math.Clamp(velocityMag / ReferenceVelocity, 0f, 2f)
-                : 0f;
-            float effectiveLead = LeadFrames * velocityScale;
-
-            float maxDim = Math.Max(selected.BoundingBox.Width, selected.BoundingBox.Height);
-            float maxLead = maxDim * 2f;
-            aimX += Math.Clamp(selected.Velocity.X * effectiveLead, -maxLead, maxLead);
-            aimY += Math.Clamp(selected.Velocity.Y * effectiveLead, -maxLead, maxLead);
+            // Selection publishes the latest semantic observation point. Temporal projection is a
+            // separate predictor concern; applying it here previously mixed normalized per-second
+            // velocity with an approximate screen span and duplicated GRU/Kalman prediction.
 
             float errorX = normalizationRadius > 0
-                ? Math.Clamp((aimX - screenCenter.X) / normalizationRadius, -1f, 1f)
+                ? Math.Clamp((point.X - screenCenter.X) / normalizationRadius, -1f, 1f)
                 : 0f;
             float errorY = normalizationRadius > 0
-                ? Math.Clamp((aimY - screenCenter.Y) / normalizationRadius, -1f, 1f)
+                ? Math.Clamp((point.Y - screenCenter.Y) / normalizationRadius, -1f, 1f)
                 : 0f;
-
-            // Normalize velocity into the same -1..+1 space as errorX/Y so feed-forward works correctly.
-            float velX = normalizationRadius > 0 ? selected.Velocity.X / normalizationRadius : 0f;
-            float velY = normalizationRadius > 0 ? selected.Velocity.Y / normalizationRadius : 0f;
 
             return new TargetSelectionResult
             {
                 SelectedTrack = selected,
                 ErrorX = errorX,
                 ErrorY = errorY,
-                TargetVelocityX = velX,
-                TargetVelocityY = velY,
+                TargetVelocityX = selected.Velocity.X,
+                TargetVelocityY = selected.Velocity.Y,
+                ObservationAgeMs = Math.Max(0, (now - selected.LastSeen).TotalMilliseconds),
+                ObservationPoint = point,
+                ObservationPointSource = resolved.Source,
             };
         }
 
@@ -150,36 +147,47 @@ namespace Aimmy2.AILogic
             IReadOnlyList<Track> tracks,
             TargetMode mode,
             SemanticRole roleFilter,
-            int? fixedTrackId)
+            int? fixedTrackId,
+            DateTime now,
+            double maximumObservationAgeMs)
         {
-            IEnumerable<Track> query = tracks.Where(t => t.Role != SemanticRole.Ignore && t.Role != SemanticRole.Friendly);
+            IEnumerable<Track> query = tracks.Where(t =>
+                t.Role != SemanticRole.Ignore &&
+                Math.Max(0, (now - t.LastSeen).TotalMilliseconds) <= maximumObservationAgeMs);
 
             switch (mode)
             {
                 case TargetMode.EnemyOnly:
                     query = query.Where(t => t.Role == SemanticRole.Enemy);
                     break;
-
                 case TargetMode.PlayerClass:
                     query = query.Where(t => t.Role == SemanticRole.Player);
                     break;
-
                 case TargetMode.SpecificClass:
                     query = query.Where(t => t.Role == roleFilter);
                     break;
-
                 case TargetMode.FixedTrackId:
                     query = fixedTrackId.HasValue
-                        ? tracks.Where(t => t.TrackId == fixedTrackId.Value && t.Role != SemanticRole.Ignore)
+                        ? query.Where(t => t.TrackId == fixedTrackId.Value)
                         : Enumerable.Empty<Track>();
                     break;
-
                 case TargetMode.TestTarget:
-                    // TestTarget mode accepts any non-ignored role for use against synthetic test-arena targets.
                     break;
             }
 
             return query.ToList();
+        }
+
+        private void ResetSelection()
+        {
+            _currentTrackId = null;
+            ResetChallenger();
+        }
+
+        private void ResetChallenger()
+        {
+            _challengerTrackId = null;
+            _challengerSince = null;
         }
 
         private static TargetSelectionResult EmptyResult() => new()
@@ -189,6 +197,8 @@ namespace Aimmy2.AILogic
             ErrorY = 0f,
             TargetVelocityX = 0f,
             TargetVelocityY = 0f,
+            ObservationAgeMs = double.PositiveInfinity,
+            ObservationPoint = PointF.Empty,
         };
 
         private static PointF TrackCenter(RectangleF box) =>

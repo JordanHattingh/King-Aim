@@ -124,7 +124,9 @@ namespace Aimmy2.Tests
         {
             // No cursor position known (e.g. cursor is on a different monitor) — must never
             // filter based on a stale/default (0,0) position.
-            var tensor = MakeSingleDetectionTensor(xCenter: 5, yCenter: 5, width: 10, height: 10, confidence: 0.9f);
+            // Keep the fixture inside the circular FOV. The old (5,5) fixture was rejected by
+            // the independent circular-FOV rule before cursor exclusion was even evaluated.
+            var tensor = MakeSingleDetectionTensor(xCenter: 320, yCenter: 320, width: 10, height: 10, confidence: 0.9f);
 
             var predictions = PredictionFilter.CreatePredictions(
                 tensor, DetectionBox, ImageSize, numDetections: 1, numClasses: NumClasses,

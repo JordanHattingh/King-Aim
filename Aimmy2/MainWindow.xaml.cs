@@ -1041,8 +1041,8 @@ namespace Aimmy2
         */
         private void HandleEmergencyStop()
         {
-            var features = new[] { "Aim Assist", "Constant AI Tracking", "Auto Trigger" };
-            var toggles = new[] { uiManager.T_AimAligner, uiManager.T_ConstantAITracking, uiManager.T_AutoTrigger };
+            var features = new[] { "Aim Assist", "Constant AI Tracking" };
+            var toggles = new[] { uiManager.T_AimAligner, uiManager.T_ConstantAITracking };
 
             for (int i = 0; i < features.Length; i++)
             {
@@ -1220,7 +1220,6 @@ namespace Aimmy2
                 ("X Offset (Left/Right)", uiManager.S_XOffset, 0.0),
                 ("Y Offset (%)", uiManager.S_YOffsetPercent, 0.0),
                 ("X Offset (%)", uiManager.S_XOffsetPercent, 0.0),
-                ("Auto Trigger Delay", uiManager.S_AutoTriggerDelay, 0.25),
                 ("AI Minimum Confidence", uiManager.S_AIMinimumConfidence, 50.0),
                 ("Kalman Lead Time", uiManager.S_KalmanLeadTime, 0.10),
                 ("WiseTheFox Lead Time", uiManager.S_WiseTheFoxLeadTime, 0.15),

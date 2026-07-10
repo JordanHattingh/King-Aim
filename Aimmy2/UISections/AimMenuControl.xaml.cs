@@ -1,4 +1,4 @@
-﻿using Aimmy2.AILogic;
+using Aimmy2.AILogic;
 using Aimmy2.Class;
 using Aimmy2.MouseMovementLibraries.GHubSupport;
 using Aimmy2.UILibrary;
@@ -74,7 +74,7 @@ namespace Aimmy2.Controls
             LoadAimAssist();
             LoadAimConfig();
             LoadPredictions();
-            LoadTriggerBot();
+            // Auto-trigger is intentionally not part of the accessibility runtime UI.
             LoadFOVConfig();
             LoadESPConfig();
             LoadGamepadAssist();
@@ -748,17 +748,17 @@ namespace Aimmy2.Controls
                 return;
             }
 
-            string acqBurst = manager.AcquisitionFramesRemaining > 0 ? $"  BURST:{manager.AcquisitionFramesRemaining}" : "";
+            string acqBurst = manager.AcquisitionBoostRemainingMs > 0
+                ? $"  BURST:{manager.AcquisitionBoostRemainingMs:F0}ms"
+                : "";
             string physCtrl = manager.PhysicalControllerConnected
                 ? $"Controller: SLOT {manager.PhysicalGamepadIndex} ✓"
                 : "Controller: NOT DETECTED";
-            string mouseAim = manager.MouseAimEnabled ? "Mouse Aim: ON" : "Mouse Aim: OFF";
-            string recoil = manager.RecoilCompensationEnabled ? "Recoil: ON" : "Recoil: OFF";
             _gamepadDiagnosticsLabel.Content =
                 $"Capture FPS: {manager.CaptureFps:F1}  Inference: {manager.InferenceMs:F1}ms  Frame Age: {manager.FrameAge:F1}ms\n" +
                 $"Enemies: {manager.EnemyDetections}  Tracks: {manager.ActiveTracks}  Selected: #{(manager.SelectedTrackId?.ToString() ?? "-")} ({manager.SelectedClass ?? "-"})\n" +
                 $"ErrX: {manager.ErrorX:F2}  ErrY: {manager.ErrorY:F2}  Vel: ({manager.TargetVelocityX:F1},{manager.TargetVelocityY:F1}){acqBurst}\n" +
-                $"RX: {manager.RX:F2}  RY: {manager.RY:F2}  {mouseAim}  {recoil}\n" +
+                $"RX: {manager.RX:F2}  RY: {manager.RY:F2}\n" +
                 $"{physCtrl}  Virtual: {(connected ? "OK" : "OFF")}";
         }
 

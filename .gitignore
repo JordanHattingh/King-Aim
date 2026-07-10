@@ -369,3 +369,27 @@ FodyWeavers.xsd
 /installer/redist/
 /installer/*.exe
 /installer/output/
+
+# King Aim local validation output
+.validation-v26/
+
+# Ultralytics generated training output
+runs/
+
+# Python generated files
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local ML training checkpoints
+*.pt
+*.pth
+*.ckpt
+
+# Local training datasets and generated data
+training/data/
+training/logs/
+training/output/
+training/outputs/
+training/checkpoints/

@@ -16,6 +16,11 @@ Dataset YAML format (kingaim_pose.yaml):
 Keypoint annotation format (YOLO pose .txt):
     class cx cy w h  kx0 ky0 kv0  kx1 ky1 kv1  kx2 ky2 kv2  kx3 ky3 kv3
     All values normalized 0..1. visibility: 0=unknown, 1=occluded, 2=visible.
+
+IMPORTANT: stock Ultralytics pose coordinate loss treats non-zero visibility values
+as coordinate-supervised keypoints. v=1 is not automatically down-weighted versus
+v=2. Do not claim visibility-weighted occlusion loss unless a pinned custom trainer
+implements and tests that loss explicitly.
 """
 
 from ultralytics import YOLO
@@ -84,4 +89,7 @@ for model_name in ["yolo11n-pose.pt", "yolo11s-pose.pt"]:
     )
     print(f"Exported FP32 ONNX: runs/pose/{model_name.replace('.pt','')}/weights/best.onnx")
 
-print("\nDone. Next: validate FP32 ONNX, then convert to FP16 with onnxconverter-common.")
+print("\nDone. Next:")
+print("  1. Run validate_pose_onnx.py on fixed validation images.")
+print("  2. Keep keypoint_visibility_is_logit=false unless raw parity proves logits.")
+print("  3. Benchmark FP32 DirectML before converting/mixing FP16.")

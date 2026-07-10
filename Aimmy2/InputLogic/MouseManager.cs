@@ -31,14 +31,45 @@ namespace InputLogic
 
         private static Random MouseRandom = new();
 
-        /// <summary>
-        /// When set, MoveCrosshair uses the neural MLP for movement instead of Bezier curves.
-        /// Set by AIManager after it loads the companion MovementMlp from the model manifest.
-        /// </summary>
-        public static MovementMlp? NeuralMovement;
+        private static MovementMlp? _neuralMovement;
+        private static float _lastTargetSizePixels;
+        private static float _lastEmittedSpeedPixPerMs;
 
-        /// <summary>Width/height of the currently tracked target in pixels. Used by MovementMlp.</summary>
-        public static float LastTargetSizePixels;
+        /// <summary>
+        /// Optional controlled-pointing movement model. King Aim's default live accessibility runtime
+        /// does not wire the perception pipeline into this property. Atomic access prevents a stale
+        /// reference from being observed during model lifecycle changes.
+        /// </summary>
+        public static MovementMlp? NeuralMovement
+        {
+            get => Volatile.Read(ref _neuralMovement);
+            set
+            {
+                MovementMlp? previous = Interlocked.Exchange(ref _neuralMovement, value);
+                if (!ReferenceEquals(previous, value))
+                {
+                    Volatile.Write(ref _lastEmittedSpeedPixPerMs, 0f);
+                    value?.Reset();
+                }
+            }
+        }
+
+        /// <summary>Width/height of the current generic pointing target in pixels.</summary>
+        public static float LastTargetSizePixels
+        {
+            get => Volatile.Read(ref _lastTargetSizePixels);
+            set => Volatile.Write(ref _lastTargetSizePixels, value);
+        }
+
+        public static bool ClearNeuralMovementIf(MovementMlp expected)
+        {
+            MovementMlp? previous = Interlocked.CompareExchange(ref _neuralMovement, null, expected);
+            if (!ReferenceEquals(previous, expected))
+                return false;
+
+            Volatile.Write(ref _lastEmittedSpeedPixPerMs, 0f);
+            return true;
+        }
 
         private static DateTime _lastMoveCrosshairTime = DateTime.UtcNow;
 
@@ -174,9 +205,18 @@ namespace InputLogic
             float dtSec = Math.Clamp((float)(now - _lastMoveCrosshairTime).TotalSeconds, 0.001f, 0.1f);
             _lastMoveCrosshairTime = now;
 
-            // Neural movement MLP: replaces Bezier curves when a trained model is loaded.
-            var mlpDelta = NeuralMovement?.Move(targetX, targetY,
-                LastTargetSizePixels, LastTargetSizePixels, dtSec);
+            // Optional controlled-pointing MLP. The previous emitted speed uses the same
+            // pixels/ms unit recorded by training/record_movement.py.
+            MovementMlp? neuralMovement = NeuralMovement;
+            float targetSizePixels = LastTargetSizePixels;
+            float previousSpeedPixPerMs = Volatile.Read(ref _lastEmittedSpeedPixPerMs);
+            var mlpDelta = neuralMovement?.Move(
+                targetX,
+                targetY,
+                targetSizePixels,
+                targetSizePixels,
+                dtSec,
+                previousSpeedPixPerMs);
 
             if (mlpDelta.HasValue)
             {
@@ -264,6 +304,10 @@ namespace InputLogic
 
             previousX = newPosition.X;
             previousY = newPosition.Y;
+            float emittedSpeedPixPerMs = MathF.Sqrt(
+                newPosition.X * newPosition.X + newPosition.Y * newPosition.Y)
+                / Math.Max(dtSec * 1000f, 1e-3f);
+            Volatile.Write(ref _lastEmittedSpeedPixPerMs, emittedSpeedPixPerMs);
 
             if (!AimSettings.AutoTrigger)
             {

@@ -22,7 +22,8 @@ namespace Aimmy2.AILogic
             PointF? cursorLocalPosition = null,
             float cursorExclusionRadius = 0f,
             float captureToModelScale = 1f,
-            int keypointCount = 0)
+            int keypointCount = 0,
+            bool keypointVisibilityIsLogit = false)
         {
             // When the actual captured screen region is smaller than the model's input size
             // (true optical zoom: capture fewer real pixels, then upscale to imageSize before
@@ -134,13 +135,18 @@ namespace Aimmy2.AILogic
                     {
                         keypoints = DecodeKeypoints(
                             outputTensor, i, kptBase, keypointCount,
-                            captureToModelScale, detectionBox);
+                            captureToModelScale, detectionBox, keypointVisibilityIsLogit);
                     }
                 }
 
                 predictions.Add(new Prediction
                 {
                     Rectangle = new RectangleF(realX, realY, realWidth, realHeight),
+                    ScreenRectangle = new RectangleF(
+                        detectionBox.Left + realX,
+                        detectionBox.Top + realY,
+                        realWidth,
+                        realHeight),
                     Confidence = bestConfidence,
                     ClassId = bestClassId,
                     ClassName = modelClasses.GetValueOrDefault(bestClassId, $"Class_{bestClassId}"),
@@ -158,13 +164,14 @@ namespace Aimmy2.AILogic
 
         private static PlayerKeypoints DecodeKeypoints(
             Tensor<float> t, int detIdx, int kptBase, int count,
-            float scale, Rectangle box)
+            float scale, Rectangle box, bool visibilityIsLogit)
         {
             Keypoint Kp(int k)
             {
                 float kx = t[0, kptBase + k * 3,     detIdx] * scale;
                 float ky = t[0, kptBase + k * 3 + 1, detIdx] * scale;
-                float kv = Sigmoid(t[0, kptBase + k * 3 + 2, detIdx]);
+                float rawKv = t[0, kptBase + k * 3 + 2, detIdx];
+                float kv = visibilityIsLogit ? Sigmoid(rawKv) : Math.Clamp(rawKv, 0f, 1f);
                 return new Keypoint
                 {
                     X = box.Left + kx,

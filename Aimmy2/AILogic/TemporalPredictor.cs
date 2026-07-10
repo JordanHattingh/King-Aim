@@ -7,25 +7,36 @@ namespace Aimmy2.AILogic
     /// Neural Network 2: GRU-64 trajectory predictor.
     ///
     /// Architecture: 1-layer GRU, input_size=8, hidden=64, head 64→32→4 (SiLU).
-    /// Output: [Δcx, Δcy, vx, vy] in normalized screen-fraction units per second.
+    /// Training target: [Δcx*2, Δcy*2, (Δcx*2)/dt, (Δcy*2)/dt]. The factor-of-two
+    /// comes from the centred coordinate transform used by train_gru.py. Runtime therefore
+    /// multiplies predicted deltas by 0.5 before adding them to 0..1 screen fractions.
     ///
-    /// Runs on CPU (ORT CPUExecutionProvider). Typical latency: 0.02–0.15 ms.
-    /// Replaces KalmanPrediction for the locked target once the buffer has 8 frames.
-    /// Falls back to Kalman when:
-    ///   - no model loaded
-    ///   - ring buffer not yet full (< 8 observations)
+    /// Runs on the CPU execution provider. The class serializes session access so a model hot-swap
+    /// cannot dispose an InferenceSession while Predict() is using it.
     /// </summary>
     public sealed class TemporalPredictor : IDisposable
     {
+        public const float TrainingDeltaScale = 2f;
+        public const float RuntimeDeltaInverseScale = 1f / TrainingDeltaScale;
+
+        private readonly object _sync = new();
         private InferenceSession? _session;
         private readonly float[] _inputBuf = new float[TrackRingBuffer.Capacity * TrackRingBuffer.FeatureCount];
         private bool _disposed;
 
-        public bool IsLoaded => _session != null;
+        public bool IsLoaded
+        {
+            get
+            {
+                lock (_sync)
+                    return !_disposed && _session != null;
+            }
+        }
 
         public void Load(string modelPath)
         {
-            var prev = _session;
+            ArgumentException.ThrowIfNullOrWhiteSpace(modelPath);
+
             var opts = new SessionOptions
             {
                 EnableMemoryPattern = true,
@@ -33,54 +44,82 @@ namespace Aimmy2.AILogic
                 IntraOpNumThreads = 2,
             };
             opts.AppendExecutionProvider_CPU();
-            _session = new InferenceSession(modelPath, opts);
-            prev?.Dispose();
+
+            var candidate = new InferenceSession(modelPath, opts);
+            InferenceSession? previous;
+            lock (_sync)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                previous = _session;
+                _session = candidate;
+            }
+            previous?.Dispose();
         }
 
         public void Unload()
         {
-            _session?.Dispose();
-            _session = null;
+            InferenceSession? previous;
+            lock (_sync)
+            {
+                previous = _session;
+                _session = null;
+            }
+            previous?.Dispose();
         }
 
         /// <summary>
-        /// Runs GRU inference. Returns predicted (Δcx, Δcy, vx, vy) in normalized units,
-        /// or null if the model is not loaded or the buffer is not ready.
+        /// Runs GRU inference. Returns model-space [Δcx*2, Δcy*2, vx*2, vy*2],
+        /// or null when no model is loaded or the buffer has fewer than eight observations.
         /// </summary>
         public (float DeltaCxNorm, float DeltaCyNorm, float VxNorm, float VyNorm)?
             Predict(TrackRingBuffer buffer, GruNormConstants norm)
         {
-            if (_session == null || !buffer.IsReady) return null;
+            ArgumentNullException.ThrowIfNull(buffer);
+            ArgumentNullException.ThrowIfNull(norm);
+            if (!buffer.IsReady)
+                return null;
 
-            buffer.FillSequence(_inputBuf, norm);
+            norm.Validate();
 
-            var inputTensor = new DenseTensor<float>(
-                _inputBuf,
-                new[] { 1, TrackRingBuffer.Capacity, TrackRingBuffer.FeatureCount });
-
-            using var inputs = new DisposableNamedOnnxValueList
+            lock (_sync)
             {
-                NamedOnnxValue.CreateFromTensor("sequence", inputTensor)
-            };
+                if (_disposed || _session == null)
+                    return null;
 
-            using var results = _session.Run(inputs);
-            var output = results[0].AsEnumerable<float>().ToArray();
+                buffer.FillSequence(_inputBuf, norm);
 
-            if (output.Length < 4) return null;
-            return (output[0], output[1], output[2], output[3]);
+                var inputTensor = new DenseTensor<float>(
+                    _inputBuf,
+                    new[] { 1, TrackRingBuffer.Capacity, TrackRingBuffer.FeatureCount });
+                var inputs = new List<NamedOnnxValue>
+                {
+                    NamedOnnxValue.CreateFromTensor("sequence", inputTensor),
+                };
+
+                using var results = _session.Run(inputs);
+                float[] output = results[0].AsEnumerable<float>().Take(4).ToArray();
+                if (output.Length < 4)
+                    return null;
+
+                return (output[0], output[1], output[2], output[3]);
+            }
         }
+
+        public static float ConvertModelDeltaToScreenFraction(float modelDelta) =>
+            modelDelta * RuntimeDeltaInverseScale;
 
         public void Dispose()
         {
-            if (_disposed) return;
-            _disposed = true;
-            _session?.Dispose();
-        }
-
-        private sealed class DisposableNamedOnnxValueList
-            : List<NamedOnnxValue>, IDisposable
-        {
-            public void Dispose() { }
+            InferenceSession? previous;
+            lock (_sync)
+            {
+                if (_disposed)
+                    return;
+                _disposed = true;
+                previous = _session;
+                _session = null;
+            }
+            previous?.Dispose();
         }
     }
 }

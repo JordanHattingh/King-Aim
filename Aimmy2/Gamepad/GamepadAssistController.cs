@@ -1,29 +1,33 @@
 namespace Aimmy2.Gamepad
 {
+    /// <summary>
+    /// Time-based bounded 2D controller used by the controlled TestArena/accessibility pointing path.
+    /// All temporal configuration is expressed in seconds or milliseconds so behaviour is independent
+    /// of inference/update frequency.
+    /// </summary>
     public sealed class GamepadAssistController
     {
-        /// <summary>Proportional gain applied when error is large (far from target).</summary>
         public float Gain { get; set; } = 2.5f;
-        /// <summary>Proportional gain applied when error is small (nearly on-target). Prevents overshoot.</summary>
         public float GainNear { get; set; } = 1.0f;
-        /// <summary>Integral gain — corrects steady-state lag on constant-velocity targets. Keep small to avoid windup.</summary>
         public float IntegralGain { get; set; } = 0.08f;
-        /// <summary>Clamp on the integral accumulator to prevent windup when target is occluded for a long time.</summary>
         public float IntegralMax { get; set; } = 0.25f;
         public float DeadbandRadius { get; set; } = 0.01f;
         public float MaxOutput { get; set; } = 1.0f;
         public float MaxSlewRate { get; set; } = 8.0f;
-        public int MaxObservationAge { get; set; } = 25;
-        /// <summary>Scales the normalized target velocity added as feed-forward to lead moving targets.</summary>
+
+        public double MaxObservationAgeMs { get; set; } = 250.0;
         public float VelocityFeedForwardGain { get; set; } = 0.4f;
-        /// <summary>EMA alpha for error smoothing: 0 = frozen, 1 = raw. 1.0 = no smoothing lag.</summary>
-        public float SmoothingAlpha { get; set; } = 1.0f;
-        /// <summary>Frames to apply the acquisition gain boost when a new target is first locked.</summary>
-        public int AcquisitionBoostFrames { get; set; } = 2;
-        /// <summary>Gain multiplier applied during the acquisition burst window.</summary>
+
+        /// <summary>First-order error response time. Zero disables smoothing.</summary>
+        public double ErrorResponseTimeMs { get; set; } = 0.0;
+
+        /// <summary>Duration of the initial acquisition gain boost.</summary>
+        public double AcquisitionBoostDurationMs { get; set; } = 35.0;
         public float AcquisitionBoostFactor { get; set; } = 3.0f;
-        /// <summary>Minimum detection confidence required for full assist. Below this the assist output is scaled down.</summary>
         public float MinConfidenceForFullAssist { get; set; } = 0.70f;
+
+        public double NoTargetErrorDecayTimeMs { get; set; } = 50.0;
+        public double NoTargetIntegralDecayTimeMs { get; set; } = 150.0;
 
         private float _currentRx;
         private float _currentRy;
@@ -32,11 +36,11 @@ namespace Aimmy2.Gamepad
         private float _integralX;
         private float _integralY;
         private int? _lastTrackId;
-        private int _acquisitionFramesRemaining;
+        private double _acquisitionBoostRemainingMs;
 
         public float RightStickX => _currentRx;
         public float RightStickY => _currentRy;
-        public int AcquisitionFramesRemaining => _acquisitionFramesRemaining;
+        public double AcquisitionBoostRemainingMs => _acquisitionBoostRemainingMs;
 
         public (float RightStickX, float RightStickY) Update(
             bool hasTarget,
@@ -45,10 +49,12 @@ namespace Aimmy2.Gamepad
             float targetVelocityX,
             float targetVelocityY,
             float confidence,
-            int observationAgeSamples,
+            double observationAgeMs,
             double dtSeconds,
             int? trackId = null)
         {
+            dtSeconds = Math.Clamp(dtSeconds, 0.0, 0.25);
+            double dtMs = dtSeconds * 1000.0;
             float desiredRx = 0f;
             float desiredRy = 0f;
 
@@ -56,53 +62,60 @@ namespace Aimmy2.Gamepad
             if (!hasTarget)
             {
                 _lastTrackId = null;
-                _acquisitionFramesRemaining = 0;
-                _smoothedErrorX *= 0.5f;
-                _smoothedErrorY *= 0.5f;
-                // Decay integral when no target — prevents stale windup on reacquisition.
-                _integralX *= 0.8f;
-                _integralY *= 0.8f;
+                _acquisitionBoostRemainingMs = 0;
+                _smoothedErrorX = DecayTowardsZero(_smoothedErrorX, NoTargetErrorDecayTimeMs, dtSeconds);
+                _smoothedErrorY = DecayTowardsZero(_smoothedErrorY, NoTargetErrorDecayTimeMs, dtSeconds);
+                _integralX = DecayTowardsZero(_integralX, NoTargetIntegralDecayTimeMs, dtSeconds);
+                _integralY = DecayTowardsZero(_integralY, NoTargetIntegralDecayTimeMs, dtSeconds);
             }
             else
             {
                 if (newTargetAcquired)
                 {
                     _lastTrackId = trackId;
-                    _acquisitionFramesRemaining = AcquisitionBoostFrames;
-                    // Clear integral on target switch — old integral is invalid for a new target.
+                    _acquisitionBoostRemainingMs = Math.Max(0, AcquisitionBoostDurationMs);
                     _integralX = 0f;
                     _integralY = 0f;
                 }
-                else if (_acquisitionFramesRemaining > 0)
-                {
-                    _acquisitionFramesRemaining--;
-                }
 
-                _smoothedErrorX = _smoothedErrorX * (1f - SmoothingAlpha) + errorX * SmoothingAlpha;
-                _smoothedErrorY = _smoothedErrorY * (1f - SmoothingAlpha) + errorY * SmoothingAlpha;
+                float alpha = FirstOrderAlpha(ErrorResponseTimeMs, dtSeconds);
+                _smoothedErrorX += (errorX - _smoothedErrorX) * alpha;
+                _smoothedErrorY += (errorY - _smoothedErrorY) * alpha;
 
-                // Integral accumulation with anti-windup clamp.
-                if (dtSeconds > 0 && observationAgeSamples == 0)
+                bool observationFresh = observationAgeMs <= Math.Max(2.0, dtMs * 1.5);
+                if (dtSeconds > 0 && observationFresh)
                 {
-                    _integralX = Math.Clamp(_integralX + _smoothedErrorX * (float)dtSeconds, -IntegralMax, IntegralMax);
-                    _integralY = Math.Clamp(_integralY + _smoothedErrorY * (float)dtSeconds, -IntegralMax, IntegralMax);
+                    _integralX = Math.Clamp(
+                        _integralX + _smoothedErrorX * (float)dtSeconds,
+                        -IntegralMax,
+                        IntegralMax);
+                    _integralY = Math.Clamp(
+                        _integralY + _smoothedErrorY * (float)dtSeconds,
+                        -IntegralMax,
+                        IntegralMax);
                 }
             }
 
-            if (hasTarget && observationAgeSamples <= MaxObservationAge)
+            if (hasTarget && observationAgeMs <= MaxObservationAgeMs)
             {
-                float radius = MathF.Sqrt(_smoothedErrorX * _smoothedErrorX + _smoothedErrorY * _smoothedErrorY);
+                float radius = MathF.Sqrt(
+                    _smoothedErrorX * _smoothedErrorX +
+                    _smoothedErrorY * _smoothedErrorY);
+
                 if (radius >= DeadbandRadius)
                 {
-                    float adaptiveGain = GainNear + (Gain - GainNear) * Math.Clamp(radius, 0f, 1f);
+                    float adaptiveGain = GainNear +
+                        (Gain - GainNear) * Math.Clamp(radius, 0f, 1f);
 
-                    if (_acquisitionFramesRemaining > 0 && AcquisitionBoostFrames > 0)
+                    if (_acquisitionBoostRemainingMs > 0 && AcquisitionBoostDurationMs > 0)
                     {
-                        float burstFraction = (float)_acquisitionFramesRemaining / AcquisitionBoostFrames;
+                        float burstFraction = (float)Math.Clamp(
+                            _acquisitionBoostRemainingMs / AcquisitionBoostDurationMs,
+                            0.0,
+                            1.0);
                         adaptiveGain *= 1f + (AcquisitionBoostFactor - 1f) * burstFraction;
                     }
 
-                    // PID: proportional + integral (steady-state correction) + velocity feed-forward.
                     float px = adaptiveGain * _smoothedErrorX;
                     float py = adaptiveGain * _smoothedErrorY;
                     float ix = IntegralGain * _integralX;
@@ -110,9 +123,8 @@ namespace Aimmy2.Gamepad
                     float ffx = VelocityFeedForwardGain * targetVelocityX;
                     float ffy = VelocityFeedForwardGain * targetVelocityY;
 
-                    // Confidence scaling: low-confidence detections get proportionally weaker assist.
                     float confScale = MinConfidenceForFullAssist < 1f
-                        ? Math.Clamp((confidence - 0f) / MinConfidenceForFullAssist, 0f, 1f)
+                        ? Math.Clamp(confidence / Math.Max(MinConfidenceForFullAssist, 1e-6f), 0f, 1f)
                         : 1f;
 
                     desiredRx = Math.Clamp((px + ix + ffx) * confScale, -MaxOutput, MaxOutput);
@@ -122,10 +134,10 @@ namespace Aimmy2.Gamepad
 
             _currentRx = SlewTowards(_currentRx, desiredRx, dtSeconds);
             _currentRy = SlewTowards(_currentRy, desiredRy, dtSeconds);
-
             _currentRx = Math.Clamp(_currentRx, -1f, 1f);
             _currentRy = Math.Clamp(_currentRy, -1f, 1f);
 
+            _acquisitionBoostRemainingMs = Math.Max(0, _acquisitionBoostRemainingMs - dtMs);
             return (_currentRx, _currentRy);
         }
 
@@ -135,14 +147,27 @@ namespace Aimmy2.Gamepad
                 return current;
 
             float maxDelta = (float)(MaxSlewRate * dtSeconds);
-            float delta = target - current;
+            return current + Math.Clamp(target - current, -maxDelta, maxDelta);
+        }
 
-            if (delta > maxDelta)
-                delta = maxDelta;
-            else if (delta < -maxDelta)
-                delta = -maxDelta;
+        private static float FirstOrderAlpha(double responseTimeMs, double dtSeconds)
+        {
+            if (responseTimeMs <= 0 || dtSeconds <= 0)
+                return responseTimeMs <= 0 ? 1f : 0f;
 
-            return current + delta;
+            double tauSeconds = responseTimeMs / 1000.0;
+            return (float)(1.0 - Math.Exp(-dtSeconds / tauSeconds));
+        }
+
+        private static float DecayTowardsZero(float value, double timeMs, double dtSeconds)
+        {
+            if (timeMs <= 0)
+                return 0f;
+            if (dtSeconds <= 0)
+                return value;
+
+            double tauSeconds = timeMs / 1000.0;
+            return value * (float)Math.Exp(-dtSeconds / tauSeconds);
         }
 
         public void Reset()
@@ -154,7 +179,7 @@ namespace Aimmy2.Gamepad
             _integralX = 0f;
             _integralY = 0f;
             _lastTrackId = null;
-            _acquisitionFramesRemaining = 0;
+            _acquisitionBoostRemainingMs = 0;
         }
     }
 }
