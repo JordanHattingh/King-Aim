@@ -103,11 +103,20 @@ namespace Visuality
         {
             if (sender is Button clickedButton)
             {
+                string? tagValue = clickedButton.Tag?.ToString();
+                if (string.IsNullOrWhiteSpace(tagValue)
+                    || !Uri.TryCreate(tagValue, UriKind.Absolute, out Uri? downloadUri)
+                    || (downloadUri.Scheme != Uri.UriSchemeHttp && downloadUri.Scheme != Uri.UriSchemeHttps))
+                {
+                    LogManager.Log(LogManager.LogLevel.Error, "LG Hub download button has an invalid or missing URL.", true);
+                    return;
+                }
+
                 LogManager.Log(LogManager.LogLevel.Info, "Attempting to download LG Hub.", true);
 
                 using HttpClient httpClient = new();
 
-                var response = await httpClient.GetAsync(new Uri(clickedButton.Tag.ToString()!));
+                var response = await httpClient.GetAsync(downloadUri);
                 if (response.IsSuccessStatusCode)
                 {
                     var content = await response.Content.ReadAsByteArrayAsync();

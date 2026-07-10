@@ -776,7 +776,7 @@ namespace Aimmy2.AILogic
                                         await _inferenceGate.WaitAsync(cancellationToken);
                                         try
                                         {
-                                            closestPrediction = await GetClosestPrediction(capturedFrame);
+                                            closestPrediction = GetClosestPrediction(capturedFrame);
                                         }
                                         finally
                                         {
@@ -786,13 +786,14 @@ namespace Aimmy2.AILogic
 
                                     if (closestPrediction == null)
                                     {
-                                        DisableOverlay(DetectedPlayerOverlay!);
+                                        if (DetectedPlayerOverlay != null)
+                                            DisableOverlay(DetectedPlayerOverlay);
                                         continue;
                                     }
 
                                     using (Benchmark("CalculateCoordinates"))
                                     {
-                                        CalculateCoordinates(DetectedPlayerOverlay!, closestPrediction, _scaleX, _scaleY);
+                                        CalculateCoordinates(DetectedPlayerOverlay, closestPrediction, _scaleX, _scaleY);
                                     }
 
                                     using (Benchmark("HandleAim"))
@@ -994,23 +995,23 @@ namespace Aimmy2.AILogic
             }
         }
 
-        private static void DisableOverlay(DetectedPlayerWindow DetectedPlayerOverlay)
+        private static void DisableOverlay(DetectedPlayerWindow? DetectedPlayerOverlay)
         {
-            if (AimSettings.ShowDetectedPlayer && Dictionary.DetectedPlayerOverlay != null)
+            if (AimSettings.ShowDetectedPlayer && DetectedPlayerOverlay != null)
             {
                 Application.Current.Dispatcher.Invoke(() =>
                 {
                     if (AimSettings.ShowAiConfidence)
                     {
-                        DetectedPlayerOverlay!.DetectedPlayerConfidence.Opacity = 0;
+                        DetectedPlayerOverlay.DetectedPlayerConfidence.Opacity = 0;
                     }
 
                     if (AimSettings.ShowTracers)
                     {
-                        DetectedPlayerOverlay!.DetectedTracers.Opacity = 0;
+                        DetectedPlayerOverlay.DetectedTracers.Opacity = 0;
                     }
 
-                    DetectedPlayerOverlay!.DetectedPlayerFocus.Opacity = 0;
+                    DetectedPlayerOverlay.DetectedPlayerFocus.Opacity = 0;
                 });
             }
         }
@@ -1099,15 +1100,15 @@ namespace Aimmy2.AILogic
             });
         }
 
-        private void CalculateCoordinates(DetectedPlayerWindow DetectedPlayerOverlay, Prediction closestPrediction, float scaleX, float scaleY)
+        private void CalculateCoordinates(DetectedPlayerWindow? DetectedPlayerOverlay, Prediction closestPrediction, float scaleX, float scaleY)
         {
             AIConf = closestPrediction.Confidence;
 
-            if (AimSettings.ShowDetectedPlayer && Dictionary.DetectedPlayerOverlay != null)
+            if (AimSettings.ShowDetectedPlayer && DetectedPlayerOverlay != null)
             {
                 using (Benchmark("UpdateOverlay"))
                 {
-                    UpdateOverlay(DetectedPlayerOverlay!, closestPrediction);
+                    UpdateOverlay(DetectedPlayerOverlay, closestPrediction);
                 }
                 if (!AimSettings.AimAssist) return;
             }
@@ -1239,9 +1240,8 @@ namespace Aimmy2.AILogic
             }
         }
 
-        private async Task<Prediction?> GetClosestPrediction(CapturedFrame? capturedFrame = null, bool useMousePosition = true)
+        private Prediction? GetClosestPrediction(CapturedFrame? capturedFrame = null, bool useMousePosition = true)
         {
-            await Task.CompletedTask.ConfigureAwait(false);
             _lastPredictionRanInference = false;
 
             float captureToModelScale;
@@ -1934,7 +1934,7 @@ namespace Aimmy2.AILogic
             }
         }
 
-        private async Task RunBenchmarkWarmupAsync(
+        private Task RunBenchmarkWarmupAsync(
             CancellationToken cancellationToken,
             IProgress<PerformanceBenchmarkProgress>? progress,
             int stepIndex,
@@ -1951,7 +1951,7 @@ namespace Aimmy2.AILogic
                 cancellationToken.ThrowIfCancellationRequested();
 
                 var frameStopwatch = Stopwatch.StartNew();
-                await GetClosestPrediction(useMousePosition: false);
+                GetClosestPrediction(useMousePosition: false);
                 frameStopwatch.Stop();
 
                 if (_lastPredictionRanInference)
@@ -1988,6 +1988,7 @@ namespace Aimmy2.AILogic
                     break;
                 }
             }
+            return Task.CompletedTask;
         }
 
         private static bool IsBenchmarkWarmupStable(IReadOnlyCollection<double> recentFrameTimes)
@@ -2063,7 +2064,7 @@ namespace Aimmy2.AILogic
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var frameStopwatch = Stopwatch.StartNew();
-                await GetClosestPrediction(useMousePosition: false);
+                GetClosestPrediction(useMousePosition: false);
                 frameStopwatch.Stop();
                 bool ranInference = _lastPredictionRanInference;
 

@@ -1,4 +1,5 @@
 ﻿using Newtonsoft.Json;
+using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 
@@ -28,10 +29,25 @@ namespace Aimmy2.Other
             response.EnsureSuccessStatusCode();
 
             var content = await response.Content.ReadAsStringAsync();
-            var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(content);
+            var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(content)
+                ?? throw new InvalidOperationException("GitHub release API returned a null or empty response.");
 
-            string tagName = data!["tag_name"].ToString() ?? throw new InvalidOperationException("Tag name is missing in the response");
-            string downloadUrl = ((JsonElement)data["assets"]).EnumerateArray().First().GetProperty("browser_download_url").ToString();
+            if (!data.TryGetValue("tag_name", out var tagNameObj) || tagNameObj is not JsonElement tagNameEl)
+                throw new InvalidOperationException("GitHub release API response is missing 'tag_name'.");
+            string tagName = tagNameEl.GetString()
+                ?? throw new InvalidOperationException("GitHub release API 'tag_name' value is null.");
+
+            if (!data.TryGetValue("assets", out var assetsObj) || assetsObj is not JsonElement assetsEl)
+                throw new InvalidOperationException("GitHub release API response is missing 'assets'.");
+
+            var assets = assetsEl.EnumerateArray().ToList();
+            if (assets.Count == 0)
+                throw new InvalidOperationException("GitHub release API response contains no assets.");
+
+            if (!assets[0].TryGetProperty("browser_download_url", out var urlEl))
+                throw new InvalidOperationException("GitHub release asset is missing 'browser_download_url'.");
+            string downloadUrl = urlEl.GetString()
+                ?? throw new InvalidOperationException("GitHub release asset 'browser_download_url' is null.");
 
             return (tagName, downloadUrl);
         }

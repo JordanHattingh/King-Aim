@@ -38,13 +38,17 @@ namespace MouseMovementLibraries.ddxoftSupport
 
         public delegate int pDD_todc(int vkcode);
 
-        public pDD_btn btn = null!;         //Mouse button
-        public pDD_whl whl = null!;         //Mouse wheel
-        public pDD_mov mov = null!;      //Mouse move abs.
-        public pDD_movR movR = null!;  //Mouse move rel.
-        public pDD_key key = null!;         //Keyboard
-        public pDD_str str = null!;            //Input visible char
-        public pDD_todc todc = null!;      //VK to ddcode
+        // These delegates are populated by GetDDfunAddress() via Marshal.GetDelegateForFunctionPointer.
+        // null! is intentional: the fields are guaranteed non-null only after Load() returns 1.
+        // DdxoftMain.DLLLoading() checks Load() == 1 before any delegate is invoked; callers must
+        // not use these fields if Load() returns anything other than 1.
+        public pDD_btn btn = null!;
+        public pDD_whl whl = null!;
+        public pDD_mov mov = null!;
+        public pDD_movR movR = null!;
+        public pDD_key key = null!;
+        public pDD_str str = null!;
+        public pDD_todc todc = null!;
 
         private IntPtr m_hinst;
 
