@@ -68,7 +68,7 @@ namespace Aimmy2
                     ThemeManager.SetThemeColor("#FF722ED1");
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 // Log error and use default color
                 ThemeManager.SetThemeColor("#FF722ED1");

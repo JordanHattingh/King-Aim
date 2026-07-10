@@ -290,7 +290,7 @@ namespace Aimmy2.AILogic
                         switch (item)
                         {
                             case AppendLinesItem append:
-                                if (!writers.TryGetValue(append.Path, out StreamWriter appendWriter))
+                                if (!writers.TryGetValue(append.Path, out StreamWriter? appendWriter))
                                 {
                                     Directory.CreateDirectory(Path.GetDirectoryName(append.Path) ?? ".");
                                     appendWriter = new StreamWriter(new FileStream(

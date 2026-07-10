@@ -54,7 +54,7 @@ namespace Aimmy2.UILibrary
         private bool _isUpdatingMediaFromCode = false;
         //--
         private bool _isMouseDown = false;
-        private WriteableBitmap _colorWheelBitmap;
+        private WriteableBitmap _colorWheelBitmap = null!;
         private Color _selectedColor = Color.FromRgb(114, 46, 209); // Default purple
         private Color _previewColor = Color.FromRgb(114, 46, 209); // For live preview
         private double _brightness = 1.0;
@@ -507,7 +507,7 @@ namespace Aimmy2.UILibrary
                 if (files?.Length > 0)
                 {
                     string filePath = files[0];
-                    string extension = System.IO.Path.GetExtension(filePath)?.ToLowerInvariant();
+                    string? extension = System.IO.Path.GetExtension(filePath)?.ToLowerInvariant();
 
                     // Only allow image formats
                     if (extension == ".png" || extension == ".jpg" || extension == ".jpeg")

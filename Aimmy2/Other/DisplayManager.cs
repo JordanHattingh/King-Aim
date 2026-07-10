@@ -320,7 +320,7 @@ namespace Aimmy2.Class
                     });
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
             }
 
@@ -334,7 +334,7 @@ namespace Aimmy2.Class
                     });
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
             }
         }

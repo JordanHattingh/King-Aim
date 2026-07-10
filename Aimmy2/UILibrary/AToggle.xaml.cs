@@ -38,7 +38,7 @@ namespace Aimmy2.UILibrary
             this.Unloaded += (s, e) => ThemeManager.ThemeChanged -= OnThemeChanged;
         }
 
-        private void OnThemeChanged(object sender, Color newThemeColor)
+        private void OnThemeChanged(object? sender, Color newThemeColor)
         {
             Application.Current.Dispatcher.BeginInvoke(() => RefreshThemeColors());
         }

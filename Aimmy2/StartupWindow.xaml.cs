@@ -63,7 +63,7 @@ namespace Aimmy2
                 await Task.Delay(500);
                 await StartSmoothTransition();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 ShowMainWindowDirect();
             }
@@ -88,7 +88,7 @@ namespace Aimmy2
                 UpdateDynamicResources(baseColor);
                 UpdateParticleColors(baseColor);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
             }
         }
@@ -358,7 +358,7 @@ namespace Aimmy2
 
         private void SetupTransitionGeometry()
         {
-            _mainWindow.Left = Left;
+            _mainWindow!.Left = Left;
             _mainWindow.Top = Top;
             _mainWindow.Show();
             _mainWindow.Opacity = 0;
@@ -445,7 +445,7 @@ namespace Aimmy2
                 ContentContainer.CacheMode = null;
                 Close();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
             }
         }
@@ -474,7 +474,7 @@ namespace Aimmy2
                 }
                 Close();
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 Application.Current.Shutdown();
             }

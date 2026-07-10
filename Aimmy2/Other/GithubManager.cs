@@ -17,7 +17,7 @@ namespace Aimmy2.Other
 
         private class GitHubContent
         {
-            public string name { get; set; }
+            public string? name { get; set; }
         }
 
         public async Task<(string tagName, string downloadUrl)> GetLatestReleaseInfo(string owner, string repo)
@@ -30,7 +30,7 @@ namespace Aimmy2.Other
             var content = await response.Content.ReadAsStringAsync();
             var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(content);
 
-            string tagName = data["tag_name"].ToString() ?? throw new InvalidOperationException("Tag name is missing in the response");
+            string tagName = data!["tag_name"].ToString() ?? throw new InvalidOperationException("Tag name is missing in the response");
             string downloadUrl = ((JsonElement)data["assets"]).EnumerateArray().First().GetProperty("browser_download_url").ToString();
 
             return (tagName, downloadUrl);

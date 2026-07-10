@@ -29,7 +29,7 @@ namespace Other
 
                 return current.CompareTo(latest);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
 
                 // Fallback to string comparison if parsing fails

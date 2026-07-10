@@ -140,7 +140,7 @@ namespace Aimmy2
             _currentMenu = "AimMenu";
         }
 
-        private async Task InitializeApplicationAsync()
+        private Task InitializeApplicationAsync()
         {
             CheckRunningFromTemp();
 
@@ -159,6 +159,7 @@ namespace Aimmy2
 
             // Subscribe to display changes after everything is initialized
             DisplayManager.DisplayChanged += OnDisplayChanged;
+            return Task.CompletedTask;
         }
 
         private void OnDisplayChanged(object? sender, DisplayChangedEventArgs e)
@@ -249,7 +250,7 @@ namespace Aimmy2
                     {
                         ThemeManager.SetThemeColor(colorString);
                     }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
                     }
                 }
@@ -350,7 +351,7 @@ namespace Aimmy2
                     }
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
             }
         }
@@ -372,7 +373,7 @@ namespace Aimmy2
                 {
                     var fm = _fileManager.Value;
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                 }
             }
@@ -749,7 +750,7 @@ namespace Aimmy2
                         break;
                 }
             }
-            catch (Exception ex)
+            catch (Exception)
             {
             }
         }
@@ -795,7 +796,7 @@ namespace Aimmy2
                 await SwitchToMenu(newMenuName);
                 _currentMenu = newMenuName;
             }
-            catch (Exception ex)
+            catch (Exception)
             {
             }
             finally
@@ -1048,7 +1049,7 @@ namespace Aimmy2
             {
                 Dictionary.toggleState[features[i]] = false;
                 if (toggles[i] != null)
-                    UpdateToggleUI(toggles[i], false);
+                    UpdateToggleUI(toggles[i]!, false);
             }
             LogManager.Log(LogManager.LogLevel.Info, "[Emergency Stop Keybind] Disabled all AI features.", true);
         }

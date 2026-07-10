@@ -16,7 +16,6 @@ namespace AILogic
         #region Variables
         private string _currentCaptureMethod = ""; // Track current method
         private bool _directXFailedPermanently = false; // Track if DirectX failed with unsupported error
-        private bool _notificationShown = false; // Prevent spam notifications
 
         // Capturing
         public Bitmap? screenCaptureBitmap { get; private set; }
@@ -39,11 +38,6 @@ namespace AILogic
         // Performance tracking
         private int _consecutiveFailures = 0;
         private const int MAX_CONSECUTIVE_FAILURES = 5;
-
-        // stride matching
-        private bool _lastStrideMatch = true;
-        private int _lastSrcStride = 0;
-        private int _lastDstStride = 0;
 
         #endregion
         #region Handlers
@@ -552,7 +546,6 @@ namespace AILogic
                 directXBitmap = null;
 
                 _currentCaptureMethod = selectedMethod;
-                _notificationShown = false; // Reset notification flag on method change
 
                 // Dispose DX resources when switching to GDI
                 if (selectedMethod == "GDI+")

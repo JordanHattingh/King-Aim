@@ -66,7 +66,7 @@ namespace Aimmy2.UILibrary
             var content = await response.Content.ReadAsByteArrayAsync();
             var filePath = Path.Combine("bin", path, name);
 
-            Directory.CreateDirectory(Path.GetDirectoryName(filePath)); // just in case
+            Directory.CreateDirectory(Path.GetDirectoryName(filePath) ?? "."); // just in case
             await File.WriteAllBytesAsync(filePath, content);
             return true;
         }

@@ -321,7 +321,7 @@ namespace Aimmy2.Controls
 
             //--
             var arrowButton = uiManager.ThemeColorWheel.FindName("ArrowButton") as Button;
-            arrowButton.Visibility = Visibility.Visible;
+            if (arrowButton != null) arrowButton.Visibility = Visibility.Visible;
             //--
 
             // Insert before separator
@@ -342,7 +342,7 @@ namespace Aimmy2.Controls
                     LogManager.Log(LogLevel.Info, $"AI focus switched to Display {e.DisplayIndex + 1} ({e.Bounds.Width}x{e.Bounds.Height})", true);
                     UpdateDisplayRelatedSettings(e);
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                 }
             });

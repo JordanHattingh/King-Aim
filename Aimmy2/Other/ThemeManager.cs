@@ -14,7 +14,7 @@ namespace Aimmy2.Theme
     public static class ThemeManager
     {
         // Theme changed event
-        public static event EventHandler<Color> ThemeChanged;
+        public static event EventHandler<Color>? ThemeChanged;
 
         // Cached theme colors
         private static Color _themeColor = Color.FromRgb(114, 46, 209);
@@ -73,11 +73,11 @@ namespace Aimmy2.Theme
         public static Color ThemeColorLight => _themeColorLight;
         public static Color ThemeGradientDark => _themeGradientDark;
         #region Media
-        private static ImageBrush _mediaBackgroundBrush;
-        private static string _currentMediaPath;
+        private static ImageBrush? _mediaBackgroundBrush;
+        private static string? _currentMediaPath;
         private static bool _isMediaBackground = false;
         public static bool IsMediaBackground => _isMediaBackground;
-        public static string CurrentMediaPath => _currentMediaPath;
+        public static string? CurrentMediaPath => _currentMediaPath;
         private static double _mediaBrightness = 1.0;
         private static readonly string _mediaConfigPath = SaveDictionary.ResolvePath("bin\\media.cfg");
         #endregion
@@ -117,7 +117,7 @@ namespace Aimmy2.Theme
                 var color = (Color)ColorConverter.ConvertFromString(hexColor);
                 SetThemeColor(color);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 // Log error or use default color
             }
@@ -181,7 +181,7 @@ namespace Aimmy2.Theme
                 {
                     var settings = JsonConvert.DeserializeObject<Dictionary<string, string>>(
                         File.ReadAllText(configPath));
-                    if (settings.TryGetValue("MediaFile", out var fileName) &&
+                    if (settings != null && settings.TryGetValue("MediaFile", out var fileName) &&
                         !string.IsNullOrEmpty(fileName))
                     {
                         string filePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "media", fileName);
@@ -208,7 +208,7 @@ namespace Aimmy2.Theme
                 if (File.Exists(configPath))
                 {
                     var settings = JsonConvert.DeserializeObject<Dictionary<string, string>>(File.ReadAllText(configPath));
-                    if (settings.TryGetValue("MediaFile", out var fileName) && !string.IsNullOrEmpty(fileName))
+                    if (settings != null && settings.TryGetValue("MediaFile", out var fileName) && !string.IsNullOrEmpty(fileName))
                     {
                         string mediaPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "bin", "media", fileName);
                         if (File.Exists(mediaPath))
@@ -800,7 +800,7 @@ namespace Aimmy2.Theme
                             break;
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                 }
             }
@@ -862,7 +862,7 @@ namespace Aimmy2.Theme
             );
         }
 
-        private static void CleanupDeadReferences(object sender, EventArgs e)
+        private static void CleanupDeadReferences(object? sender, EventArgs e)
         {
             var deadRefs = _themedElements.Keys
                 .Where(wr => !wr.IsAlive)
@@ -880,8 +880,8 @@ namespace Aimmy2.Theme
 
         private class ThemeElementInfo
         {
-            public FrameworkElement Target { get; set; }
-            public string PropertyPath { get; set; }
+            public FrameworkElement Target { get; set; } = null!;
+            public string PropertyPath { get; set; } = null!;
             public ThemeType ThemeType { get; set; }
         }
 

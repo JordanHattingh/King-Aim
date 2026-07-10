@@ -49,7 +49,7 @@ namespace Other
                     return false;
                 }
 
-                string ghubfilepath = process.MainModule.FileName;
+                string? ghubfilepath = process.MainModule?.FileName;
                 if (ghubfilepath == null)
                 {
                     LogManager.Log(LogManager.LogLevel.Error, "An error occurred. Run as admin and try again.", true);
@@ -58,7 +58,7 @@ namespace Other
 
                 FileVersionInfo versionInfo = FileVersionInfo.GetVersionInfo(ghubfilepath);
 
-                if (!versionInfo.ProductVersion.Contains("2021"))
+                if (!(versionInfo.ProductVersion?.Contains("2021") ?? false))
                 {
                     ShowLGHubImproperInstallMessage();
                     return false;

@@ -102,9 +102,6 @@ namespace Aimmy2.AILogic
         private readonly SemaphoreSlim _inferenceGate = new(1, 1);
         private bool _disposed;
 
-        // For Auto-Labelling Data System
-        private bool PlayerFound = false;
-
         private double CenterXTranslated = 0;
         private double CenterYTranslated = 0;
 
@@ -586,7 +583,7 @@ namespace Aimmy2.AILogic
                         //int maxClassId = -1;
                         foreach (var item in data)
                         {
-                            if (int.TryParse(item.Key, out int classId) && item.Value.Type == JTokenType.String)
+                            if (int.TryParse(item.Key, out int classId) && item.Value != null && item.Value.Type == JTokenType.String)
                             {
                                 _modelClasses[classId] = item.Value.ToString();
                             }
@@ -795,7 +792,7 @@ namespace Aimmy2.AILogic
 
                                     using (Benchmark("CalculateCoordinates"))
                                     {
-                                        CalculateCoordinates(DetectedPlayerOverlay, closestPrediction, _scaleX, _scaleY);
+                                        CalculateCoordinates(DetectedPlayerOverlay!, closestPrediction, _scaleX, _scaleY);
                                     }
 
                                     using (Benchmark("HandleAim"))
@@ -1244,6 +1241,7 @@ namespace Aimmy2.AILogic
 
         private async Task<Prediction?> GetClosestPrediction(CapturedFrame? capturedFrame = null, bool useMousePosition = true)
         {
+            await Task.CompletedTask.ConfigureAwait(false);
             _lastPredictionRanInference = false;
 
             float captureToModelScale;

@@ -38,13 +38,13 @@ namespace MouseMovementLibraries.ddxoftSupport
 
         public delegate int pDD_todc(int vkcode);
 
-        public pDD_btn btn;         //Mouse button
-        public pDD_whl whl;         //Mouse wheel
-        public pDD_mov mov;      //Mouse move abs.
-        public pDD_movR movR;  //Mouse move rel.
-        public pDD_key key;         //Keyboard
-        public pDD_str str;            //Input visible char
-        public pDD_todc todc;      //VK to ddcode
+        public pDD_btn btn = null!;         //Mouse button
+        public pDD_whl whl = null!;         //Mouse wheel
+        public pDD_mov mov = null!;      //Mouse move abs.
+        public pDD_movR movR = null!;  //Mouse move rel.
+        public pDD_key key = null!;         //Keyboard
+        public pDD_str str = null!;            //Input visible char
+        public pDD_todc todc = null!;      //VK to ddcode
 
         private IntPtr m_hinst;
 

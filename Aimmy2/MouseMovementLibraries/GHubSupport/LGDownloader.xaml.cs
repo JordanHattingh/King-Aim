@@ -34,7 +34,7 @@ namespace Visuality
             ThemeManager.ThemeChanged += OnThemeChanged;
         }
 
-        private void OnThemeChanged(object sender, System.Windows.Media.Color newColor)
+        private void OnThemeChanged(object? sender, System.Windows.Media.Color newColor)
         {
             Dispatcher.Invoke(() =>
             {
@@ -107,7 +107,7 @@ namespace Visuality
 
                 using HttpClient httpClient = new();
 
-                var response = await httpClient.GetAsync(new Uri(clickedButton.Tag.ToString()));
+                var response = await httpClient.GetAsync(new Uri(clickedButton.Tag.ToString()!));
                 if (response.IsSuccessStatusCode)
                 {
                     var content = await response.Content.ReadAsByteArrayAsync();
