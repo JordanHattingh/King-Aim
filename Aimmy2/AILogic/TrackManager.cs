@@ -16,9 +16,22 @@ namespace Aimmy2.AILogic
         public PointF Velocity { get; internal set; }
         public int ObservationCount { get; internal set; }
 
-        // Per-track Kalman filter: gives smoothed position + velocity estimates
-        // under noisy detections, replacing the simple EMA velocity tracker.
+        // Per-track Kalman filter: fallback when GRU buffer is not yet full.
         internal KalmanPrediction Kalman { get; } = new();
+
+        // 8-frame ring buffer fed to the GRU temporal predictor.
+        internal TrackRingBuffer RingBuffer { get; } = new();
+
+        /// <summary>
+        /// Most recent keypoints from the pose model. Null for plain detection models.
+        /// </summary>
+        public PlayerKeypoints? Keypoints { get; internal set; }
+
+        /// <summary>
+        /// GRU-predicted next position (screen pixels). Null until buffer has 8 frames.
+        /// Used by AIManager instead of Kalman for the locked target.
+        /// </summary>
+        public (float X, float Y)? GruPredictedCenter { get; internal set; }
 
         internal PointF Center => new(
             BoundingBox.X + BoundingBox.Width / 2f,
@@ -33,6 +46,10 @@ namespace Aimmy2.AILogic
 
         private readonly List<Track> _tracks = new();
         private int _nextTrackId = 1;
+
+        // Screen dimensions needed to normalize ring buffer observations to [0,1].
+        public int ScreenWidth  { get; set; } = 1920;
+        public int ScreenHeight { get; set; } = 1080;
 
         public int MaxFramesLost { get; set; } = 5;
 
@@ -145,7 +162,7 @@ namespace Aimmy2.AILogic
             return _tracks.ToList();
         }
 
-        private static void UpdateTrackWithDetection(Track track, Prediction detection, DateTime frameTime)
+        private void UpdateTrackWithDetection(Track track, Prediction detection, DateTime frameTime)
         {
             PointF newCenter = DetectionCenter(detection);
 
@@ -182,9 +199,33 @@ namespace Aimmy2.AILogic
 
             track.Confidence = detection.Confidence;
             track.ClassName = detection.ClassName;
+            track.Keypoints = detection.Keypoints;
             track.LastSeen = frameTime;
             track.FramesSinceLastSeen = 0;
             track.ObservationCount++;
+
+            // Push real observation into the GRU ring buffer.
+            float sw = Math.Max(ScreenWidth,  1);
+            float sh = Math.Max(ScreenHeight, 1);
+            var center = new PointF(
+                smoothed.X / sw,
+                smoothed.Y / sh);
+            float prevObs = track.RingBuffer.Count > 0
+                ? track.RingBuffer.Count < TrackRingBuffer.Capacity
+                    ? 0.0167f
+                    : 0.0167f
+                : 0.0167f;
+            track.RingBuffer.Push(new TrackObservation
+            {
+                CxNorm      = center.X,
+                CyNorm      = center.Y,
+                WNorm       = detection.Rectangle.Width  / sw,
+                HNorm       = detection.Rectangle.Height / sh,
+                Confidence  = detection.Confidence,
+                ObservedMask = 1f,
+                DtSeconds   = Math.Clamp((float)(frameTime - track.LastSeen).TotalSeconds, 0f, 0.1f),
+                AgeSeconds  = 0f,
+            });
         }
 
         private static PointF TrackCenter(RectangleF box) =>

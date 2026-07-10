@@ -21,7 +21,8 @@ namespace Aimmy2.AILogic
             float viewmodelExclusionFraction = 0f,
             PointF? cursorLocalPosition = null,
             float cursorExclusionRadius = 0f,
-            float captureToModelScale = 1f)
+            float captureToModelScale = 1f,
+            int keypointCount = 0)
         {
             // When the actual captured screen region is smaller than the model's input size
             // (true optical zoom: capture fewer real pixels, then upscale to imageSize before
@@ -122,6 +123,21 @@ namespace Aimmy2.AILogic
                 float realCenterX = xCenter * captureToModelScale;
                 float realCenterY = yCenter * captureToModelScale;
 
+                // Decode pose keypoints when model has a pose head.
+                // YOLO-pose tensor layout (1 class, K keypoints):
+                //   row 0..3 = cx,cy,w,h   row 4 = conf   rows 5.. = kx,ky,kv × K
+                PlayerKeypoints? keypoints = null;
+                if (keypointCount > 0)
+                {
+                    int kptBase = 4 + numClasses;
+                    if (outputTensor.Dimensions[1] >= kptBase + keypointCount * 3)
+                    {
+                        keypoints = DecodeKeypoints(
+                            outputTensor, i, kptBase, keypointCount,
+                            captureToModelScale, detectionBox);
+                    }
+                }
+
                 predictions.Add(new Prediction
                 {
                     Rectangle = new RectangleF(realX, realY, realWidth, realHeight),
@@ -131,13 +147,42 @@ namespace Aimmy2.AILogic
                     CenterXTranslated = xCenter / imageSize,
                     CenterYTranslated = yCenter / imageSize,
                     ScreenCenterX = detectionBox.Left + realCenterX,
-                    ScreenCenterY = detectionBox.Top + realCenterY
+                    ScreenCenterY = detectionBox.Top + realCenterY,
+                    Keypoints = keypoints,
                 });
             }
 
             // NMS: remove duplicate boxes for the same target (sorted by confidence, suppress overlapping same-class boxes)
             return ApplyNms(predictions, nmsIouThreshold: 0.45f);
         }
+
+        private static PlayerKeypoints DecodeKeypoints(
+            Tensor<float> t, int detIdx, int kptBase, int count,
+            float scale, Rectangle box)
+        {
+            Keypoint Kp(int k)
+            {
+                float kx = t[0, kptBase + k * 3,     detIdx] * scale;
+                float ky = t[0, kptBase + k * 3 + 1, detIdx] * scale;
+                float kv = Sigmoid(t[0, kptBase + k * 3 + 2, detIdx]);
+                return new Keypoint
+                {
+                    X = box.Left + kx,
+                    Y = box.Top  + ky,
+                    Visibility = kv,
+                };
+            }
+
+            return new PlayerKeypoints
+            {
+                Head  = count > 0 ? Kp(0) : Keypoint.Empty,
+                Neck  = count > 1 ? Kp(1) : Keypoint.Empty,
+                Chest = count > 2 ? Kp(2) : Keypoint.Empty,
+                Hip   = count > 3 ? Kp(3) : Keypoint.Empty,
+            };
+        }
+
+        private static float Sigmoid(float x) => 1f / (1f + MathF.Exp(-x));
 
         private static List<Prediction> ApplyNms(List<Prediction> predictions, float nmsIouThreshold)
         {

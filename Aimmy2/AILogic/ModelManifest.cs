@@ -19,6 +19,22 @@ namespace Aimmy2.AILogic
         public SemanticRole SemanticRole { get; set; }
     }
 
+    /// <summary>
+    /// Per-feature normalization constants exported alongside the GRU training run.
+    /// The GRU was trained on standardized inputs; these constants must match exactly.
+    /// </summary>
+    public sealed class GruNormConstants
+    {
+        public float LogWMean  { get; set; } = -2.32f;
+        public float LogWStd   { get; set; } = 0.50f;
+        public float LogHMean  { get; set; } = -1.45f;
+        public float LogHStd   { get; set; } = 0.50f;
+        public float DtMean    { get; set; } = 0.0167f;
+        public float DtStd     { get; set; } = 0.005f;
+        public float AgeMean   { get; set; } = 0.05f;
+        public float AgeStd    { get; set; } = 0.05f;
+    }
+
     public class ModelManifest
     {
         public string SchemaVersion { get; set; } = "1";
@@ -35,6 +51,39 @@ namespace Aimmy2.AILogic
         /// Full-body models: 0.25 (head/chest). Head-only models: 0.5 (dead center).
         /// </summary>
         public float AimPointFraction { get; set; } = 0.25f;
+
+        // ── Pose model fields ─────────────────────────────────────────────────
+
+        /// <summary>
+        /// True when the ONNX model has a keypoint output head (YOLO11-pose).
+        /// PredictionFilter uses this to enable keypoint decoding.
+        /// </summary>
+        public bool IsPoseModel { get; set; } = false;
+
+        /// <summary>
+        /// Number of keypoints per detection. Must match kpt_shape[0] in training YAML.
+        /// King Aim standard: 4 (head, neck, chest, hip).
+        /// </summary>
+        public int KeypointCount { get; set; } = 0;
+
+        /// <summary>
+        /// Human-readable names in kpt_shape order. Used for UI / debug overlays.
+        /// </summary>
+        public List<string> KeypointNames { get; set; } = new();
+
+        // ── Neural bundle paths (relative to model directory) ─────────────────
+
+        /// <summary>Path to GRU temporal predictor ONNX (relative). Null = use Kalman only.</summary>
+        public string? TemporalModelPath { get; set; }
+
+        /// <summary>Path to calibration MLP ONNX (relative). Null = use raw confidence.</summary>
+        public string? CalibrationModelPath { get; set; }
+
+        /// <summary>Path to movement MLP ONNX (relative). Null = use Bezier curves.</summary>
+        public string? MovementModelPath { get; set; }
+
+        /// <summary>Normalization constants baked in at training time for the GRU input.</summary>
+        public GruNormConstants? GruNorm { get; set; }
 
         private static readonly JsonSerializerOptions SerializerOptions = new()
         {
