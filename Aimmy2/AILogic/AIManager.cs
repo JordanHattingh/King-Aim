@@ -132,6 +132,17 @@ namespace Aimmy2.AILogic
         private readonly CaptureManager _captureManager = new();
         private readonly StickyAimSelector _stickyAimSelector = new();
 
+        // ── Neural companion models ────────────────────────────────────────────────
+        // Loaded lazily after the primary detection model is ready, guided by the manifest.
+        // Each falls back gracefully (raw conf / Kalman / Bezier) when not loaded.
+        private readonly TemporalPredictor _temporalPredictor = new();
+        private readonly CalibrationMlp    _calibrationMlp    = new();
+        private readonly MovementMlp       _movementMlp       = new();
+
+        // GRU aim hint for the locked target, updated each frame in RunGamepadAssistPipeline.
+        // Consumed by HandlePredictions to upgrade the Kalman path when a full buffer is ready.
+        private (float X, float Y)? _gruAimHint;
+
         // Gamepad assist pipeline (parallel to the mouse-aim path above; StickyAimSelector still
         // drives MouseManager.MoveCrosshair unchanged. Track/target/gamepad only ever produce stick output.)
         private readonly TrackManager _trackManager = new();
@@ -562,6 +573,55 @@ namespace Aimmy2.AILogic
             {
                 Log(LogLevel.Warning, $"Could not load or generate model manifest: {ex.Message}");
                 _activeManifest = ModelManifest.CreateFallback("unknown", "unknown", _modelClasses);
+            }
+
+            LoadCompanionModels();
+        }
+
+        /// <summary>
+        /// Loads the three companion networks (GRU, calibration, movement) from paths declared
+        /// in the manifest. Silently skips any that are missing or fail to load.
+        /// </summary>
+        private void LoadCompanionModels()
+        {
+            if (_activeManifest == null) return;
+            string modelDir = Path.GetDirectoryName(_modelPath) ?? ".";
+
+            TryLoadCompanion(_activeManifest.TemporalModelPath, modelDir,
+                path => _temporalPredictor.Load(path), "GRU temporal predictor");
+
+            TryLoadCompanion(_activeManifest.CalibrationModelPath, modelDir,
+                path => _calibrationMlp.Load(path), "calibration MLP");
+
+            TryLoadCompanion(_activeManifest.MovementModelPath, modelDir,
+                path =>
+                {
+                    _movementMlp.Load(path);
+                    MouseManager.NeuralMovement = _movementMlp;
+                }, "movement MLP");
+        }
+
+        private void TryLoadCompanion(string? relativePath, string modelDir, Action<string> loader, string name)
+        {
+            if (relativePath == null) return;
+            string fullPath = Path.IsPathRooted(relativePath)
+                ? relativePath
+                : Path.Combine(modelDir, relativePath);
+            try
+            {
+                if (File.Exists(fullPath))
+                {
+                    loader(fullPath);
+                    Log(LogLevel.Info, $"Loaded companion {name}");
+                }
+                else
+                {
+                    Log(LogLevel.Info, $"Companion {name} not present at '{relativePath}' — skipping.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log(LogLevel.Warning, $"Failed to load companion {name}: {ex.Message}");
             }
         }
 
@@ -1052,22 +1112,34 @@ namespace Aimmy2.AILogic
 
             var rect = closestPrediction.Rectangle;
 
-            if (AimSettings.UseXAxisPercentageAdjustment)
+            // Pose keypoint aim point takes priority: direct body-landmark coordinates are more
+            // accurate than any box-fraction heuristic. Fall through to box heuristics when no
+            // pose model is loaded or the best keypoint is not visible.
+            var kp = closestPrediction.Keypoints?.BestAimPoint;
+            if (kp.HasValue)
             {
-                detectedX = (int)((rect.X + (rect.Width * (XOffsetPercentage / 100))) * scaleX);
+                detectedX = (int)(kp.Value.X * scaleX + XOffset);
+                detectedY = (int)(kp.Value.Y * scaleY + YOffset);
             }
             else
             {
-                detectedX = (int)((rect.X + rect.Width / 2) * scaleX + XOffset);
-            }
+                if (AimSettings.UseXAxisPercentageAdjustment)
+                {
+                    detectedX = (int)((rect.X + (rect.Width * (XOffsetPercentage / 100))) * scaleX);
+                }
+                else
+                {
+                    detectedX = (int)((rect.X + rect.Width / 2) * scaleX + XOffset);
+                }
 
-            if (AimSettings.UseYAxisPercentageAdjustment)
-            {
-                detectedY = (int)((rect.Y + rect.Height - (rect.Height * (YOffsetPercentage / 100))) * scaleY + YOffset);
-            }
-            else
-            {
-                detectedY = CalculateDetectedY(scaleY, YOffset, closestPrediction);
+                if (AimSettings.UseYAxisPercentageAdjustment)
+                {
+                    detectedY = (int)((rect.Y + rect.Height - (rect.Height * (YOffsetPercentage / 100))) * scaleY + YOffset);
+                }
+                else
+                {
+                    detectedY = CalculateDetectedY(scaleY, YOffset, closestPrediction);
+                }
             }
         }
 
@@ -1123,6 +1195,12 @@ namespace Aimmy2.AILogic
             switch (predictionMethod)
             {
                 case "Kalman Filter":
+                    // GRU temporal predictor upgrades the Kalman path when the track buffer is full.
+                    if (_gruAimHint.HasValue)
+                    {
+                        MouseManager.MoveCrosshair((int)_gruAimHint.Value.X, (int)_gruAimHint.Value.Y);
+                        break;
+                    }
                     KalmanPrediction.Detection detection = new()
                     {
                         X = detectedX,
@@ -1285,6 +1363,9 @@ namespace Aimmy2.AILogic
                             (cursorScreenPos.Y - detectionBox.Top) / captureToModelScale);
                     }
 
+                    int keypointCount = _activeManifest?.IsPoseModel == true
+                        ? _activeManifest.KeypointCount : 0;
+
                     KDPredictions = PredictionFilter.CreatePredictions(
                         outputTensor,
                         detectionBox,
@@ -1301,7 +1382,25 @@ namespace Aimmy2.AILogic
                         (float)AimSettings.ViewmodelExclusion,
                         cursorLocalPosition,
                         (float)AimSettings.CursorExclusionRadius,
-                        captureToModelScale);
+                        captureToModelScale,
+                        keypointCount);
+                }
+
+                // Confidence calibration: replace raw YOLO confidence with the MLP's
+                // calibrated estimate, which accounts for box size, position, and pose quality.
+                if (_calibrationMlp.IsLoaded && KDPredictions.Count > 0)
+                {
+                    float frameAgeMs = (float)FrameAge;
+                    float imF = IMAGE_SIZE;
+                    foreach (var p in KDPredictions)
+                    {
+                        float cx = (p.Rectangle.X + p.Rectangle.Width  * 0.5f) / imF;
+                        float cy = (p.Rectangle.Y + p.Rectangle.Height * 0.5f) / imF;
+                        float wn = p.Rectangle.Width  / imF;
+                        float hn = p.Rectangle.Height / imF;
+                        p.Confidence = _calibrationMlp.Calibrate(
+                            p.Confidence, wn, hn, cx, cy, frameAgeMs, p.Keypoints);
+                    }
                 }
 
                 using (Benchmark("GamepadAssistPipeline"))
@@ -1469,6 +1568,41 @@ namespace Aimmy2.AILogic
             ErrorY = selection.ErrorY;
             TargetVelocityX = selection.TargetVelocityX;
             TargetVelocityY = selection.TargetVelocityY;
+
+            // GRU temporal prediction: when the locked track's ring buffer is full,
+            // compute next-frame predicted position and store it for HandlePredictions.
+            if (_temporalPredictor.IsLoaded && selection.SelectedTrack != null)
+            {
+                var norm = _activeManifest?.GruNorm ?? new GruNormConstants();
+                var g = _temporalPredictor.Predict(selection.SelectedTrack.RingBuffer, norm);
+                if (g.HasValue)
+                {
+                    float sw = Math.Max(ScreenWidth, 1);
+                    float sh = Math.Max(ScreenHeight, 1);
+                    PointF cur = selection.SelectedTrack.Center;
+                    float predX = (cur.X / sw + g.Value.DeltaCxNorm * 0.5f) * sw;
+                    float predY = (cur.Y / sh + g.Value.DeltaCyNorm * 0.5f) * sh;
+                    selection.SelectedTrack.GruPredictedCenter = (predX, predY);
+                    _gruAimHint = (predX, predY);
+                }
+                else
+                {
+                    selection.SelectedTrack.GruPredictedCenter = null;
+                    _gruAimHint = null;
+                }
+            }
+            else
+            {
+                _gruAimHint = null;
+            }
+
+            // Expose last target size to MouseManager for the neural movement MLP.
+            if (selection.SelectedTrack != null)
+            {
+                MouseManager.LastTargetSizePixels = Math.Max(
+                    selection.SelectedTrack.BoundingBox.Width,
+                    selection.SelectedTrack.BoundingBox.Height);
+            }
 
             bool hasTarget = selection.SelectedTrack != null;
             int observationAge = hasTarget ? selection.SelectedTrack!.FramesSinceLastSeen : int.MaxValue;
@@ -2089,6 +2223,13 @@ namespace Aimmy2.AILogic
             _modeloptions?.Dispose();
             _inferenceGate.Dispose();
             _bitmapBuffer = null;
+
+            // Companion neural networks
+            _temporalPredictor.Dispose();
+            _calibrationMlp.Dispose();
+            _movementMlp.Dispose();
+            if (MouseManager.NeuralMovement == _movementMlp)
+                MouseManager.NeuralMovement = null;
         }
     }
 }

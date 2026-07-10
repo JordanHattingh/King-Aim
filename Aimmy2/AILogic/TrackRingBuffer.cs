@@ -44,6 +44,11 @@ namespace Aimmy2.AILogic
         public int Count => _count;
         public bool IsReady => _count >= Capacity;
 
+        /// <summary>Most recently pushed observation, or default if the buffer is empty.</summary>
+        public TrackObservation Tail => _count > 0
+            ? _buf[(_head - 1 + Capacity) % Capacity]
+            : default;
+
         public void Push(TrackObservation obs)
         {
             _buf[_head] = obs;

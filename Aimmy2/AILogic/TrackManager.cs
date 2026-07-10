@@ -11,6 +11,7 @@ namespace Aimmy2.AILogic
         public string ClassName { get; internal set; } = "";
         public RectangleF BoundingBox { get; internal set; }
         public float Confidence { get; internal set; }
+        public DateTime FirstSeen { get; internal set; }
         public DateTime LastSeen { get; internal set; }
         public int FramesSinceLastSeen { get; internal set; }
         public PointF Velocity { get; internal set; }
@@ -134,6 +135,13 @@ namespace Aimmy2.AILogic
                 if (!matchedTracks.Contains(track))
                 {
                     track.FramesSinceLastSeen++;
+                    // Push a carry-forward Missing observation so the GRU buffer advances
+                    // during detection gaps and doesn't stall on the last-seen frame.
+                    if (track.RingBuffer.Count > 0)
+                    {
+                        float missDt = Math.Clamp((float)(frameTime - track.LastSeen).TotalSeconds, 0f, 0.1f);
+                        track.RingBuffer.Push(TrackObservation.Missing(track.RingBuffer.Tail, missDt));
+                    }
                 }
             }
 
@@ -149,6 +157,7 @@ namespace Aimmy2.AILogic
                     ClassName = detection.ClassName,
                     BoundingBox = detection.Rectangle,
                     Confidence = detection.Confidence,
+                    FirstSeen = frameTime,
                     LastSeen = frameTime,
                     FramesSinceLastSeen = 0,
                     Velocity = PointF.Empty,
@@ -197,6 +206,10 @@ namespace Aimmy2.AILogic
             track.BoundingBox = new RectangleF(smoothed.X - halfW, smoothed.Y - halfH,
                 detection.Rectangle.Width, detection.Rectangle.Height);
 
+            // Capture timing BEFORE updating LastSeen so DtSeconds is the real inter-frame gap.
+            float dt  = Math.Clamp((float)(frameTime - track.LastSeen).TotalSeconds, 0f, 0.1f);
+            float age = Math.Clamp((float)(frameTime - track.FirstSeen).TotalSeconds, 0f, 0.25f);
+
             track.Confidence = detection.Confidence;
             track.ClassName = detection.ClassName;
             track.Keypoints = detection.Keypoints;
@@ -210,21 +223,16 @@ namespace Aimmy2.AILogic
             var center = new PointF(
                 smoothed.X / sw,
                 smoothed.Y / sh);
-            float prevObs = track.RingBuffer.Count > 0
-                ? track.RingBuffer.Count < TrackRingBuffer.Capacity
-                    ? 0.0167f
-                    : 0.0167f
-                : 0.0167f;
             track.RingBuffer.Push(new TrackObservation
             {
-                CxNorm      = center.X,
-                CyNorm      = center.Y,
-                WNorm       = detection.Rectangle.Width  / sw,
-                HNorm       = detection.Rectangle.Height / sh,
-                Confidence  = detection.Confidence,
+                CxNorm       = center.X,
+                CyNorm       = center.Y,
+                WNorm        = detection.Rectangle.Width  / sw,
+                HNorm        = detection.Rectangle.Height / sh,
+                Confidence   = detection.Confidence,
                 ObservedMask = 1f,
-                DtSeconds   = Math.Clamp((float)(frameTime - track.LastSeen).TotalSeconds, 0f, 0.1f),
-                AgeSeconds  = 0f,
+                DtSeconds    = dt,
+                AgeSeconds   = age,
             });
         }
 

@@ -1,3 +1,4 @@
+using Aimmy2.AILogic;
 using Aimmy2.Class;
 using Aimmy2.MouseMovementLibraries.GHubSupport;
 using Class;
@@ -29,6 +30,17 @@ namespace InputLogic
         private static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, int dwExtraInfo);
 
         private static Random MouseRandom = new();
+
+        /// <summary>
+        /// When set, MoveCrosshair uses the neural MLP for movement instead of Bezier curves.
+        /// Set by AIManager after it loads the companion MovementMlp from the model manifest.
+        /// </summary>
+        public static MovementMlp? NeuralMovement;
+
+        /// <summary>Width/height of the currently tracked target in pixels. Used by MovementMlp.</summary>
+        public static float LastTargetSizePixels;
+
+        private static DateTime _lastMoveCrosshairTime = DateTime.UtcNow;
 
         private static double EmaSmoothing(double previousValue, double currentValue, double smoothingFactor) => (currentValue * smoothingFactor) + (previousValue * (1 - smoothingFactor));
 
@@ -158,48 +170,59 @@ namespace InputLogic
             Point end = new(targetX, targetY);
             Point newPosition = new Point(0, 0);
 
-            double t = 1.0 - AimSettings.MouseSensitivity;
-            switch (AimSettings.MovementPath)
+            var now = DateTime.UtcNow;
+            float dtSec = Math.Clamp((float)(now - _lastMoveCrosshairTime).TotalSeconds, 0.001f, 0.1f);
+            _lastMoveCrosshairTime = now;
+
+            // Neural movement MLP: replaces Bezier curves when a trained model is loaded.
+            var mlpDelta = NeuralMovement?.Move(targetX, targetY,
+                LastTargetSizePixels, LastTargetSizePixels, dtSec);
+
+            if (mlpDelta.HasValue)
             {
-                case "Human Bezier":
-                    // Quadratic bezier with perpendicular arc — matches real wrist movement.
-                    // Recommended default for natural-looking aim.
-                    newPosition = MovementPaths.HumanBezier(start, end, t);
-                    break;
-                case "Cubic Bezier":
-                    // Fixed: control points now offset perpendicular to chord so it's an
-                    // actual curve, not the previous collinear (= linear) implementation.
-                    {
-                        double dx = end.X - start.X;
-                        double dy = end.Y - start.Y;
-                        double dist = Math.Sqrt(dx * dx + dy * dy);
-                        double px = dist > 1 ? -dy / dist : 0;
-                        double py = dist > 1 ?  dx / dist : 0;
-                        double off = dist * 0.12;
-                        Point control1 = new Point(
-                            (int)(start.X + dx / 3 + px * off),
-                            (int)(start.Y + dy / 3 + py * off));
-                        Point control2 = new Point(
-                            (int)(start.X + 2 * dx / 3 - px * off * 0.5),
-                            (int)(start.Y + 2 * dy / 3 - py * off * 0.5));
-                        newPosition = MovementPaths.CubicBezier(start, end, control1, control2, t);
-                    }
-                    break;
-                case "Linear":
-                    newPosition = MovementPaths.Lerp(start, end, t);
-                    break;
-                case "Exponential":
-                    newPosition = MovementPaths.Exponential(start, end, 1 - (AimSettings.MouseSensitivity - 0.2), 3.0);
-                    break;
-                case "Adaptive":
-                    newPosition = MovementPaths.Adaptive(start, end, t);
-                    break;
-                case "Perlin Noise":
-                    newPosition = MovementPaths.PerlinNoise(start, end, t, 20, 0.5);
-                    break;
-                default:
-                    newPosition = MovementPaths.Lerp(start, end, t);
-                    break;
+                newPosition = new Point(mlpDelta.Value.dx, mlpDelta.Value.dy);
+            }
+            else
+            {
+                double t = 1.0 - AimSettings.MouseSensitivity;
+                switch (AimSettings.MovementPath)
+                {
+                    case "Human Bezier":
+                        newPosition = MovementPaths.HumanBezier(start, end, t);
+                        break;
+                    case "Cubic Bezier":
+                        {
+                            double dx = end.X - start.X;
+                            double dy = end.Y - start.Y;
+                            double dist = Math.Sqrt(dx * dx + dy * dy);
+                            double px = dist > 1 ? -dy / dist : 0;
+                            double py = dist > 1 ?  dx / dist : 0;
+                            double off = dist * 0.12;
+                            Point control1 = new Point(
+                                (int)(start.X + dx / 3 + px * off),
+                                (int)(start.Y + dy / 3 + py * off));
+                            Point control2 = new Point(
+                                (int)(start.X + 2 * dx / 3 - px * off * 0.5),
+                                (int)(start.Y + 2 * dy / 3 - py * off * 0.5));
+                            newPosition = MovementPaths.CubicBezier(start, end, control1, control2, t);
+                        }
+                        break;
+                    case "Linear":
+                        newPosition = MovementPaths.Lerp(start, end, t);
+                        break;
+                    case "Exponential":
+                        newPosition = MovementPaths.Exponential(start, end, 1 - (AimSettings.MouseSensitivity - 0.2), 3.0);
+                        break;
+                    case "Adaptive":
+                        newPosition = MovementPaths.Adaptive(start, end, t);
+                        break;
+                    case "Perlin Noise":
+                        newPosition = MovementPaths.PerlinNoise(start, end, t, 20, 0.5);
+                        break;
+                    default:
+                        newPosition = MovementPaths.Lerp(start, end, t);
+                        break;
+                }
             }
 
             if (IsEMASmoothingEnabled)
