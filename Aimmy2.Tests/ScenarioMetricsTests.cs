@@ -8,6 +8,62 @@ namespace Aimmy2.Tests;
 
 public sealed class ScenarioMetricsTests
 {
+    private static ScenarioMetricsSummary ClassifyOcclusionDetection(int trackId, double ageMs, bool extrapolated, double elapsedMs)
+    {
+        var recorder = new ScenarioMetricsRecorder("OcclusionClassification", matchRadiusPixels: 30);
+        DateTime now = DateTime.UtcNow;
+        recorder.Record(now, [new("enemy1", new PointF(100, 100), true)],
+            [new(7, new PointF(100, 100), false, 0, null)], 0, 0, 60);
+        recorder.Record(now.AddMilliseconds(elapsedMs), [new("enemy1", new PointF(100, 100), false)],
+            [new(trackId, new PointF(100, 100), extrapolated, ageMs, null)], 0, 0, 60);
+        return recorder.Summarize();
+    }
+
+    [Theory]
+    [InlineData(200, true)]
+    [InlineData(450, false)]
+    public void Occlusion_OldTrackWithinWindow_IsExpectedPersistence(double ageMs, bool extrapolated)
+    {
+        ScenarioMetricsSummary summary = ClassifyOcclusionDetection(7, ageMs, extrapolated, ageMs);
+        Assert.Equal(1, summary.ExpectedOcclusionPersistenceFrames);
+        Assert.Equal(0, summary.FalsePositives);
+    }
+
+    [Fact]
+    public void Occlusion_OldTrackAfter601Ms_IsGhostAfterDeadline()
+    {
+        ScenarioMetricsSummary summary = ClassifyOcclusionDetection(7, 601, false, 601);
+        Assert.Equal(1, summary.GhostAfterPersistenceDeadline);
+        Assert.Equal(1, summary.FalsePositives);
+        Assert.True(summary.OcclusionExceededPersistenceWindow);
+        Assert.False(summary.OldTrackExpiredByDeadline);
+    }
+
+    [Fact]
+    public void Occlusion_DifferentTrackWithinWindow_IsUnrelatedFalsePositive()
+    {
+        ScenarioMetricsSummary summary = ClassifyOcclusionDetection(8, 100, false, 100);
+        Assert.Equal(1, summary.UnrelatedFalsePositive);
+        Assert.Equal(1, summary.FalsePositives);
+    }
+
+    [Fact]
+    public void Reappearance_OldAndNewTrackIds_CountsDuplicate()
+    {
+        var recorder = new ScenarioMetricsRecorder("DuplicateAfterReappearance", matchRadiusPixels: 30);
+        DateTime now = DateTime.UtcNow;
+        recorder.Record(now, [new("enemy1", new PointF(100, 100), true)],
+            [new(7, new PointF(100, 100), false, 0, null)], 0, 0, 60);
+        recorder.Record(now.AddMilliseconds(100), [new("enemy1", new PointF(100, 100), false)],
+            [new(7, new PointF(100, 100), true, 100, null)], 0, 0, 60);
+        recorder.Record(now.AddMilliseconds(200), [new("enemy1", new PointF(100, 100), true)],
+            [new(8, new PointF(100, 100), false, 0, null), new(7, new PointF(200, 100), false, 200, null)], 0, 0, 60);
+
+        ScenarioMetricsSummary summary = recorder.Summarize();
+        Assert.Equal(1, summary.DuplicateAfterReappearance);
+        Assert.Equal(1, summary.FalsePositives);
+    }
+
     [Fact]
     public void Recorder_CountsMatchesFalsePositivesAndMisses()
     {

@@ -75,8 +75,8 @@ public sealed record ScenarioMetricsSummary(
     int    UnrelatedFalsePositive,
     // Occlusion transition diagnostics.
     bool   TrackIdPreservedAfterOcclusion,
-    // OldTrackExpiredByDeadline: true when the gap exceeded MaxLostSeconds, meaning a new track
-    // on reappearance is an expected lifecycle event, not a tracker failure.
+    // Elapsed time proves the persistence window ended; only observed tracker output proves expiry.
+    bool   OcclusionExceededPersistenceWindow,
     bool   OldTrackExpiredByDeadline,
     int    OldTrackIdAtOcclusionStart,
     int    NewTrackIdAtFirstReappearance,
@@ -135,7 +135,8 @@ public sealed class ScenarioMetricsRecorder
     private int? _firstTrackIdAfterOcclusion;      // set on first match after reappearance
     private bool _awaitingFirstReappearanceMatch;  // true from hidden→visible until first match
     private bool _countingReacquisitionFrames;     // true from reappearance until first match
-    private bool _oldTrackExpiredByDeadline;       // gap exceeded window → new ID is expected lifecycle
+    private bool _occlusionExceededPersistenceWindow;
+    private bool _oldTrackExpiredByDeadline;       // original ID observed absent after its deadline
     private DateTime? _reappearanceTimestamp;      // when target last became visible (duplicate window)
     // FP buckets (replaces position-based SpuriousFPDuringOcclusion).
     private int _expectedOcclusionPersistenceFrames;
@@ -224,6 +225,7 @@ public sealed class ScenarioMetricsRecorder
                     _failedReacquisitions++;
 
                 _occlusionStartedAt       = timestamp;
+                _occlusionExceededPersistenceWindow = false;
                 _oldTrackExpiredByDeadline = false;
                 _currentCycleReacqFrames  = 0;
 
@@ -247,7 +249,7 @@ public sealed class ScenarioMetricsRecorder
             if (_occlusionStartedAt.HasValue &&
                 (timestamp - _occlusionStartedAt.Value).TotalSeconds > OcclusionPersistenceWindowSeconds)
             {
-                _oldTrackExpiredByDeadline = true;
+                _occlusionExceededPersistenceWindow = true;
             }
 
             _occlusionStartedAt             = null;
@@ -354,6 +356,21 @@ public sealed class ScenarioMetricsRecorder
         // UnrelatedFalsePositive count toward the FalsePositives gate.
         // ExpectedOcclusionPersistenceFrames are intentional extrapolation and are NOT an FP.
         int unmatched = detections.Count - matchedDetections.Count;
+        if (anyInvisible
+            && _trackIdAtOcclusionStart.HasValue
+            && detections.Any(det => det.TrackId == _trackIdAtOcclusionStart.Value
+                && det.ObservationAgeMs > OcclusionPersistenceWindowMs))
+        {
+            _occlusionExceededPersistenceWindow = true;
+        }
+        if (anyInvisible
+            && _trackIdAtOcclusionStart.HasValue
+            && _occlusionStartedAt.HasValue
+            && (timestamp - _occlusionStartedAt.Value).TotalSeconds > OcclusionPersistenceWindowSeconds)
+        {
+            _occlusionExceededPersistenceWindow = true;
+            _oldTrackExpiredByDeadline = detections.All(det => det.TrackId != _trackIdAtOcclusionStart.Value);
+        }
         if (unmatched > 0)
         {
             foreach (int di in Enumerable.Range(0, detections.Count).Where(i => !matchedDetections.Contains(i)))
@@ -367,10 +384,12 @@ public sealed class ScenarioMetricsRecorder
                         && det.TrackId == _trackIdAtOcclusionStart.Value;
 
                     if (isOldOccludedTrack
-                        && det.IsExtrapolated
                         && det.ObservationAgeMs <= OcclusionPersistenceWindowMs)
                     {
-                        // Old track extrapolating within its allowed window — expected, not an FP.
+                        // Old track alive within its allowed persistence window — expected, not an FP.
+                        // Note: BoundingBoxIsExtrapolated is only true for the first MaxLostSeconds/2;
+                        // the track stays alive but stops updating its box for the second half of the
+                        // window. ObsAge alone is the reliable test for "track within lifetime".
                         _expectedOcclusionPersistenceFrames++;
                     }
                     else if (isOldOccludedTrack
@@ -528,6 +547,7 @@ public sealed class ScenarioMetricsRecorder
         DuplicateAfterReappearance:             _duplicateAfterReappearance,
         UnrelatedFalsePositive:                 _unrelatedFalsePositive,
         TrackIdPreservedAfterOcclusion:         _trackIdPreservedAfterOcclusion,
+        OcclusionExceededPersistenceWindow:     _occlusionExceededPersistenceWindow,
         OldTrackExpiredByDeadline:              _oldTrackExpiredByDeadline,
         OldTrackIdAtOcclusionStart:             _trackIdAtOcclusionStart ?? 0,
         NewTrackIdAtFirstReappearance:          _firstTrackIdAfterOcclusion ?? 0,
