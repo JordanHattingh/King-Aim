@@ -274,6 +274,10 @@ public sealed class ScenarioMetricsRecorder
                     }
                 }
 
+                // No reachable column found (all costs INF and all columns used).
+                // This can happen when all targets are beyond matchRadius of all detections.
+                if (j1 < 0) break;
+
                 for (int j = 0; j <= sz; j++)
                 {
                     if (used[j]) { u[p[j]] += delta; v[j] -= delta; }
@@ -281,7 +285,7 @@ public sealed class ScenarioMetricsRecorder
                 }
                 j0 = j1;
             }
-            while (p[j0] != 0);
+            while (j0 > 0 && p[j0] != 0);
 
             do
             {
