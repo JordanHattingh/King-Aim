@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -41,6 +42,10 @@ public sealed record ScenarioMetricsSummary(
     double SimulationDurationSeconds,
     DateTime SimulationStartUtc,
     DateTime SimulationEndUtc,
+    // Run identity (populated for automated repeated runs; empty/0 for manual runs).
+    string RunId,
+    int    Repetition,
+    string GitCommit,
     double RealElapsedMs,
     double RenderFpsP50,
     // Injection configuration (populated for SyntheticTracking; "N/A" / 0 for GameplayReplay).
@@ -76,6 +81,7 @@ public sealed record ScenarioMetricsSummary(
     double InferenceP99Ms,
     double FrameAgeP95Ms,
     double CaptureFpsP50,
+    bool   CaptureFpsApplicable,
     // Occlusion-specific metrics (non-zero only for scenarios with Visible=false phases).
     int    OcclusionFrames,
     // FP classification during occlusion:
@@ -188,6 +194,12 @@ public sealed class ScenarioMetricsRecorder
     private int _switchTracesWritten;
     /// <summary>Directory to write per-switch diagnostic CSVs into. Null disables CSV output.</summary>
     public string? SwitchTracePath { get; set; }
+    /// <summary>Unique identifier for this run, used in the output filename and report.</summary>
+    public string RunId { get; set; } = string.Empty;
+    /// <summary>Repetition number within an automated gate sequence (1-based; 0 = manual run).</summary>
+    public int Repetition { get; set; } = 0;
+    /// <summary>Short git commit hash stamped into the report for traceability.</summary>
+    public string GitCommit { get; set; } = string.Empty;
 
     public ScenarioMetricsRecorder(
         string scenario,
@@ -586,6 +598,9 @@ public sealed class ScenarioMetricsRecorder
         SimulationDurationSeconds:         _domain == BenchmarkDomain.SyntheticTracking ? (double)_frames / FixedSimulationClock.FrequencyHz : 0,
         SimulationStartUtc:                _domain == BenchmarkDomain.SyntheticTracking ? FixedSimulationClock.EpochUtc : default,
         SimulationEndUtc:                  _domain == BenchmarkDomain.SyntheticTracking ? FixedSimulationClock.EpochUtc.AddTicks((long)_frames * TimeSpan.TicksPerSecond / FixedSimulationClock.FrequencyHz) : default,
+        RunId:                             RunId,
+        Repetition:                        Repetition,
+        GitCommit:                         GitCommit,
         RealElapsedMs:                     Math.Max(0, (DateTime.UtcNow - _realStartedAt).TotalMilliseconds),
         RenderFpsP50:                      Percentile(_renderFps, 0.50),
         NoiseProfile:                      _noiseConfig?.ProfileName ?? "N/A",
@@ -619,6 +634,7 @@ public sealed class ScenarioMetricsRecorder
         InferenceP99Ms:           Percentile(_inferenceMs, 0.99),
         FrameAgeP95Ms:            Percentile(_frameAgeMs, 0.95),
         CaptureFpsP50:            Percentile(_captureFps, 0.50),
+        CaptureFpsApplicable:     _detectorExecuted,
         OcclusionFrames:                        _occlusionFrames,
         ExpectedOcclusionPersistenceFrames:     _expectedOcclusionPersistenceFrames,
         GhostAfterPersistenceDeadline:          _ghostAfterPersistenceDeadline,
@@ -815,13 +831,73 @@ public static class ScenarioReportWriter
     public static void Write(string outputDirectory, ScenarioMetricsSummary summary)
     {
         Directory.CreateDirectory(outputDirectory);
-        string safeScenario = string.Concat(summary.Scenario.Select(character => char.IsLetterOrDigit(character) ? character : '_'));
-        string stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff");
-        string stem = Path.Combine(outputDirectory, $"{stamp}_{safeScenario}");
+        string stem;
+        if (!string.IsNullOrEmpty(summary.RunId))
+        {
+            string safeRunId = string.Concat(summary.RunId.Select(c => char.IsLetterOrDigit(c) || c == '_' || c == '-' ? c : '_'));
+            stem = Path.Combine(outputDirectory, safeRunId);
+        }
+        else
+        {
+            string safeScenario = string.Concat(summary.Scenario.Select(c => char.IsLetterOrDigit(c) ? c : '_'));
+            string stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff");
+            stem = Path.Combine(outputDirectory, $"{stamp}_{safeScenario}");
+        }
         File.WriteAllText(stem + ".json", JsonSerializer.Serialize(summary, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(stem + ".hash", CanonicalHash(summary));
         var csv = new StringBuilder();
         csv.AppendLine(string.Join(',', typeof(ScenarioMetricsSummary).GetProperties().Select(property => property.Name)));
         csv.AppendLine(string.Join(',', typeof(ScenarioMetricsSummary).GetProperties().Select(property => Convert.ToString(property.GetValue(summary), System.Globalization.CultureInfo.InvariantCulture))));
         File.WriteAllText(stem + ".csv", csv.ToString());
+    }
+
+    /// <summary>
+    /// Canonical projection for reproducibility verification: excludes wall-clock timings,
+    /// render FPS, file timestamps, and absolute paths. Floating-point values are rounded to
+    /// six decimal places before hashing so serialization differences do not create false deltas.
+    /// </summary>
+    public static string CanonicalHash(ScenarioMetricsSummary s)
+    {
+        var projection = new
+        {
+            s.Scenario,
+            s.NoiseProfile,
+            s.RandomSeed,
+            s.SimulationFrames,
+            s.DetectionCount,
+            s.FalsePositives,
+            s.MissedDetections,
+            s.PositionGateMissFrames,
+            s.AssociationLossEvents,
+            s.SameTrackOutsideGateFrames,
+            s.ConfirmedTrackExpiryEvents,
+            MaximumPositionErrorPixels = Math.Round(s.MaximumPositionErrorPixels, 6),
+            s.MaximumConsecutivePositionMissFrames,
+            s.IdentitySwitches,
+            s.IdentitySwitchesOutsideAmbiguity,
+            s.UnexpectedIdentitySwitchesOutsideAmbiguity,
+            s.ExpectedTrackReinitializations,
+            s.OcclusionFrames,
+            s.ExpectedOcclusionPersistenceFrames,
+            s.GhostAfterPersistenceDeadline,
+            s.DuplicateAfterReappearance,
+            s.UnrelatedFalsePositive,
+            s.OcclusionCycleCount,
+            s.SuccessfulReacquisitions,
+            s.FailedReacquisitions,
+            s.MaxReacquisitionFrames,
+            s.TrackIdPreservedAfterOcclusion,
+            s.OldTrackExpiredByDeadline,
+            MeanReacquisitionMs = Math.Round(s.MeanReacquisitionMs, 6),
+            MeanPredictiveErrorPixels = Math.Round(s.MeanPredictiveErrorPixels, 6),
+            ObservationAgeP95Ms = Math.Round(s.ObservationAgeP95Ms, 6),
+        };
+        string json = JsonSerializer.Serialize(projection, new JsonSerializerOptions
+        {
+            WriteIndented = false,
+            PropertyNamingPolicy = null,
+        });
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(json));
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 }

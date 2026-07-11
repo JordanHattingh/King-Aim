@@ -329,7 +329,7 @@ public sealed class ScenarioMetricsTests
     }
 
     [Fact]
-    public void ReportWriter_CreatesJsonAndCsv()
+    public void ReportWriter_CreatesJsonAndCsvAndHash()
     {
         string directory = Path.Combine(Path.GetTempPath(), $"kingaim-arena-{Guid.NewGuid():N}");
         try
@@ -340,11 +340,119 @@ public sealed class ScenarioMetricsTests
 
             Assert.Single(Directory.GetFiles(directory, "*.json"));
             Assert.Single(Directory.GetFiles(directory, "*.csv"));
+            Assert.Single(Directory.GetFiles(directory, "*.hash"));
         }
         finally
         {
             if (Directory.Exists(directory))
                 Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Fact]
+    public void ReportWriter_WithRunId_UsesRunIdAsFilename()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"kingaim-arena-{Guid.NewGuid():N}");
+        try
+        {
+            var recorder = new ScenarioMetricsRecorder("DirectionReversal", ScenarioKind.DirectionReversal,
+                noiseConfig: SyntheticProfile.Noisy.Configuration())
+            {
+                RunId = "DirectionReversal_Noisy_R01_seed42_abc1234",
+                Repetition = 1,
+                GitCommit = "abc1234",
+            };
+            recorder.Record(FixedSimulationClock.EpochUtc, [], [], 0, 0, 0);
+            ScenarioReportWriter.Write(directory, recorder.Summarize());
+
+            Assert.Single(Directory.GetFiles(directory, "DirectionReversal_Noisy_R01_seed42_abc1234.json"));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    // ── Canonical hash / reproducibility tests ───────────────────────────────
+
+    private static ScenarioMetricsSummary RunDeterministicSequence(int repetitionOffset = 0)
+    {
+        // Pure evaluator-level reproducibility: same fixed clock, same injected detections.
+        // Does not drive TrackManager — tests that ScenarioMetricsRecorder is deterministic
+        // when given identical input regardless of wall-clock time.
+        _ = repetitionOffset; // all repetitions use the same inputs by design
+        var recorder = new ScenarioMetricsRecorder("DirectionReversal", ScenarioKind.DirectionReversal,
+            noiseConfig: SyntheticProfile.Noisy.Configuration())
+        {
+            RunId = $"DirectionReversal_Noisy_R0{repetitionOffset + 1}_seed42_test",
+            Repetition = repetitionOffset + 1,
+            GitCommit = "test",
+        };
+        var clock = new FixedSimulationClock();
+        for (int i = 0; i < 600; i++)
+        {
+            DateTime ts = clock.Advance();
+            bool occluded = i is >= 120 and < 240;
+            var targets = new[] { new ArenaGroundTruth("enemy1", new System.Drawing.PointF(100 + i * 0.5f, 300), !occluded) };
+            ArenaDetection[] detections = occluded
+                ? []
+                : [new ArenaDetection(1, new System.Drawing.PointF(100 + i * 0.5f, 300), false, i * (1000.0 / 60), null)];
+            recorder.Record(ts, targets, detections, 0, 0, 0);
+        }
+        return recorder.Summarize();
+    }
+
+    [Fact]
+    public void CanonicalHash_SameInputTwice_ProducesIdenticalHash()
+    {
+        string hash1 = ScenarioReportWriter.CanonicalHash(RunDeterministicSequence(0));
+        string hash2 = ScenarioReportWriter.CanonicalHash(RunDeterministicSequence(0));
+        Assert.Equal(hash1, hash2);
+    }
+
+    [Fact]
+    public void CanonicalHash_FiveRepetitions_AllHashesMatch()
+    {
+        string[] hashes = Enumerable.Range(0, 5)
+            .Select(i => ScenarioReportWriter.CanonicalHash(RunDeterministicSequence(i)))
+            .ToArray();
+
+        string first = hashes[0];
+        foreach (string h in hashes)
+            Assert.Equal(first, h);
+    }
+
+    [Fact]
+    public void CanonicalHash_ExcludesRealElapsedMsAndRunId()
+    {
+        // Two summaries that differ only in wall-clock metadata must hash identically.
+        // We can't control RealElapsedMs directly from outside, but two runs of the same
+        // deterministic sequence at slightly different wall times will differ in RealElapsedMs
+        // while producing the same canonical hash.
+        ScenarioMetricsSummary s1 = RunDeterministicSequence(0);
+        ScenarioMetricsSummary s2 = RunDeterministicSequence(1); // different RunId/Repetition
+
+        // The canonical fields are identical regardless of RunId/Repetition/RealElapsedMs.
+        Assert.Equal(ScenarioReportWriter.CanonicalHash(s1), ScenarioReportWriter.CanonicalHash(s2));
+        // But the summaries themselves differ in RunId.
+        Assert.NotEqual(s1.RunId, s2.RunId);
+    }
+
+    [Fact]
+    public void CanonicalHash_DifferentDetectionCount_ProducesDifferentHash()
+    {
+        var r1 = new ScenarioMetricsRecorder("DirectionReversal", ScenarioKind.DirectionReversal,
+            noiseConfig: SyntheticProfile.Noisy.Configuration());
+        var r2 = new ScenarioMetricsRecorder("DirectionReversal", ScenarioKind.DirectionReversal,
+            noiseConfig: SyntheticProfile.Noisy.Configuration());
+        DateTime ts = FixedSimulationClock.EpochUtc;
+        var target = new[] { new ArenaGroundTruth("e1", new System.Drawing.PointF(100, 100), true) };
+        r1.Record(ts, target, [new ArenaDetection(1, new System.Drawing.PointF(100, 100), false, 0, null)], 0, 0, 0);
+        r2.Record(ts, target, [], 0, 0, 0); // miss — different metrics
+
+        Assert.NotEqual(
+            ScenarioReportWriter.CanonicalHash(r1.Summarize()),
+            ScenarioReportWriter.CanonicalHash(r2.Summarize()));
     }
 }

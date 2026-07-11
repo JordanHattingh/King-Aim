@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -14,6 +15,12 @@ using Rectangle = System.Windows.Shapes.Rectangle;
 
 namespace Aimmy2.TestArena
 {
+    public sealed record AutomatedReportRun(
+        ScenarioKind Scenario,
+        SyntheticProfile Profile,
+        int Repetition,
+        string RunId);
+
     public partial class MainWindow : Window
     {
         private readonly DispatcherTimer _renderTimer;
@@ -33,9 +40,11 @@ namespace Aimmy2.TestArena
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "KingAim", "TestArenaReports");
         private ScenarioMetricsRecorder? _metricsRecorder;
-        private readonly Queue<ScenarioKind> _reportQueue = new();
+        private readonly Queue<AutomatedReportRun> _reportQueue = new();
+        private AutomatedReportRun? _currentAutomatedRun;
         private bool _runningAllReports;
         private readonly FixedSimulationClock _simulationClock = new();
+        private static readonly string s_gitCommit = GetGitCommitShort();
         private const int ScenarioDurationSeconds = 10;
         private const int ScenarioDurationFrames = ScenarioDurationSeconds * FixedSimulationClock.FrequencyHz;
 
@@ -140,12 +149,26 @@ namespace Aimmy2.TestArena
             _scenario = new Scenario(kind, width, height);
 
             bool detectorExecuted = kind.Domain() == BenchmarkDomain.GameplayReplay && _aiManager != null;
+
+            // Build the full RunId now that the noise config (and thus seed) is known.
+            string runId = string.Empty;
+            int repetition = 0;
+            if (_currentAutomatedRun != null)
+            {
+                int seed = noiseConfig?.Seed ?? 0;
+                runId = $"{_currentAutomatedRun.RunId}_seed{seed}_{s_gitCommit}";
+                repetition = _currentAutomatedRun.Repetition;
+            }
+
             _metricsRecorder = new ScenarioMetricsRecorder(
                 kind.ToString(), kind,
                 detectorExecuted: detectorExecuted,
                 noiseConfig: noiseConfig)
             {
                 SwitchTracePath = Path.Combine(_reportDirectory, "switch_traces"),
+                RunId     = runId,
+                Repetition = repetition,
+                GitCommit = s_gitCommit,
             };
 
             foreach (var target in _scenario.Targets)
@@ -231,22 +254,42 @@ namespace Aimmy2.TestArena
             }
 
             PublishPointingTelemetry();
-            RecordScenarioMetrics(frameTimestamp, fixedStep ? FixedSimulationClock.FrequencyHz : null);
+            RecordScenarioMetrics(frameTimestamp);
             AdvanceAutomatedReports();
             UpdateDiagnostics();
         }
 
         private void RunAllReports_Click(object sender, RoutedEventArgs e)
         {
+            QueueReproducibilityGate();
+        }
+
+        private void QueueReproducibilityGate()
+        {
             _reportQueue.Clear();
-            foreach (ScenarioKind kind in Enum.GetValues<ScenarioKind>())
+
+            ScenarioKind[] scenarios =
+            [
+                ScenarioKind.DirectionReversal,
+                ScenarioKind.HighSpeedCross,
+                ScenarioKind.StopStart,
+            ];
+
+            foreach (ScenarioKind scenario in scenarios)
             {
-                // GameplayReplay is a stub — no real frames are fed through the detector yet.
-                // Exclude it so it cannot produce an empty report that looks complete.
-                if (kind == ScenarioKind.GameplayReplay)
-                    continue;
-                _reportQueue.Enqueue(kind);
+                for (int repetition = 1; repetition <= 5; repetition++)
+                {
+                    // Seed and git commit are appended to RunId in RebuildScenario once
+                    // the noise config is constructed; this prefix identifies the run slot.
+                    string runIdPrefix = $"{scenario}_Noisy_R{repetition:D2}";
+                    _reportQueue.Enqueue(new AutomatedReportRun(
+                        scenario,
+                        SyntheticProfile.Noisy,
+                        repetition,
+                        runIdPrefix));
+                }
             }
+
             _runningAllReports = true;
             RunNextAutomatedScenario();
         }
@@ -262,21 +305,28 @@ namespace Aimmy2.TestArena
 
         private void RunNextAutomatedScenario()
         {
-            if (!_reportQueue.TryDequeue(out ScenarioKind kind))
+            if (!_reportQueue.TryDequeue(out AutomatedReportRun? run))
             {
+                _currentAutomatedRun = null;
                 _runningAllReports = false;
                 ReportStatusLabel.Text = $"Complete: {_reportDirectory}";
                 return;
             }
 
-            if (!Equals(ScenarioComboBox.SelectedItem, kind))
-                ScenarioComboBox.SelectedItem = kind;
-            else
-                RebuildScenario(kind);
-            ReportStatusLabel.Text = $"Recording {kind} ({_reportQueue.Count + 1} remaining)";
+            NoiseProfileComboBox.SelectedItem = run.Profile;
+            ScenarioComboBox.SelectedItem = run.Scenario;
+
+            // Mandatory explicit rebuild: ensures the fixed clock, RNG seed, tracker state,
+            // and metrics are reset for every repetition regardless of whether the ComboBox
+            // selection changed.
+            _currentAutomatedRun = run;
+            RebuildScenario(run.Scenario);
+
+            ReportStatusLabel.Text =
+                $"Recording {run.Scenario} [{run.Profile}] repetition {run.Repetition}/5 ({_reportQueue.Count} queued)";
         }
 
-        private void RecordScenarioMetrics(DateTime timestamp, double? simulationFps = null)
+        private void RecordScenarioMetrics(DateTime timestamp)
         {
             if (_metricsRecorder == null || ArenaCanvas.ActualWidth <= 0)
                 return;
@@ -309,7 +359,11 @@ namespace Aimmy2.TestArena
 
             double inferenceMs = _aiManager?.InferenceMs ?? 0.0;
             double frameAgeMs = _aiManager?.FrameAge ?? 0.0;
-            double captureFps = simulationFps ?? _aiManager?.CaptureFps ?? (1.0 / Math.Max(0.001, _lastRenderDtSeconds));
+            // Capture FPS only applies when the real detection pipeline ran.
+            // Synthetic scenarios bypass YOLO; passing simulationFps here would imply synthetic
+            // capture activity in the report, which is misleading.
+            bool detectorRan = _scenario.Kind.Domain() == BenchmarkDomain.GameplayReplay && _aiManager != null;
+            double captureFps = detectorRan ? (_aiManager!.CaptureFps) : 0.0;
             _metricsRecorder.Record(timestamp, targets, detections, inferenceMs, frameAgeMs, captureFps,
                 renderFps: 1.0 / Math.Max(0.001, _lastRenderDtSeconds));
         }
@@ -491,6 +545,27 @@ namespace Aimmy2.TestArena
                 $"RY: {_aiManager.RY:F2}\n" +
                 $"Gamepad Connected: {_aiManager.GamepadConnected}";
             DiagnosticsText.Text += $"\nReports: {_reportDirectory}";
+        }
+
+        private static string GetGitCommitShort()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("git", "rev-parse --short HEAD")
+                {
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                using Process? proc = Process.Start(psi);
+                string? output = proc?.StandardOutput.ReadToEnd().Trim();
+                proc?.WaitForExit();
+                return string.IsNullOrWhiteSpace(output) ? "unknown" : output;
+            }
+            catch
+            {
+                return "unknown";
+            }
         }
 
         private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
