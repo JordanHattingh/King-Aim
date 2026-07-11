@@ -11,7 +11,14 @@ TRAINING = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TRAINING))
 
 from export_yolov8_baseline import baseline_id, build_manifest
-from validate_detector_onnx import summarize_case, synthetic_inputs
+from validate_detector_onnx import (
+    _box_iou_batch,
+    _nms,
+    decode_detections,
+    semantic_parity_case,
+    summarize_case,
+    synthetic_inputs,
+)
 
 
 class DetectorValidationToolTests(unittest.TestCase):
@@ -54,6 +61,112 @@ class DetectorValidationToolTests(unittest.TestCase):
         value = np.zeros((1, 17, 10), dtype=np.float32)
         with self.assertRaises(ValueError):
             summarize_case("pose", value, value.copy(), 1, (0.25,))
+
+    # ------------------------------------------------------------------
+    # NMS and decode
+    # ------------------------------------------------------------------
+
+    def test_nms_suppresses_overlapping_box(self) -> None:
+        # Two heavily overlapping boxes — NMS should keep only the highest-score one.
+        boxes = np.array([[0, 0, 10, 10], [1, 1, 11, 11]], dtype=np.float32)
+        scores = np.array([0.9, 0.8], dtype=np.float32)
+        keep = _nms(boxes, scores, iou_thresh=0.5)
+        self.assertEqual([0], keep.tolist())
+
+    def test_nms_keeps_non_overlapping_boxes(self) -> None:
+        boxes = np.array([[0, 0, 10, 10], [20, 20, 30, 30]], dtype=np.float32)
+        scores = np.array([0.9, 0.8], dtype=np.float32)
+        keep = _nms(boxes, scores, iou_thresh=0.5)
+        self.assertEqual(sorted(keep.tolist()), [0, 1])
+
+    def test_decode_detections_filters_by_threshold(self) -> None:
+        # Build a [1, 5, 4] tensor: 2 high-confidence, 2 low-confidence anchors.
+        raw = np.zeros((1, 5, 4), dtype=np.float32)
+        # cx, cy, w, h in pixel space
+        raw[0, :4, 0] = [50, 50, 20, 20]   # conf=0.9
+        raw[0, :4, 1] = [150, 150, 20, 20]  # conf=0.8
+        raw[0, :4, 2] = [250, 250, 20, 20]  # conf=0.09 (below 0.10)
+        raw[0, :4, 3] = [350, 350, 20, 20]  # conf=0.05 (below 0.10)
+        raw[0, 4, :] = [0.9, 0.8, 0.09, 0.05]
+        boxes, scores = decode_detections(raw, conf_thresh=0.10)
+        self.assertEqual(2, len(scores))
+        self.assertGreater(scores[0], scores[1])  # sorted descending
+
+    def test_decode_detections_empty_below_threshold(self) -> None:
+        raw = np.zeros((1, 5, 3), dtype=np.float32)
+        raw[0, 4, :] = [0.01, 0.02, 0.03]
+        boxes, scores = decode_detections(raw, conf_thresh=0.10)
+        self.assertEqual(0, len(scores))
+        self.assertEqual((0, 4), boxes.shape)
+
+    def test_box_iou_identical_boxes(self) -> None:
+        box = np.array([[10, 10, 30, 30]], dtype=np.float32)
+        iou = _box_iou_batch(box, box)
+        self.assertAlmostEqual(1.0, iou[0, 0], places=6)
+
+    def test_box_iou_non_overlapping(self) -> None:
+        a = np.array([[0, 0, 10, 10]], dtype=np.float32)
+        b = np.array([[20, 20, 30, 30]], dtype=np.float32)
+        iou = _box_iou_batch(a, b)
+        self.assertAlmostEqual(0.0, iou[0, 0], places=6)
+
+    # ------------------------------------------------------------------
+    # Semantic parity
+    # ------------------------------------------------------------------
+
+    def _make_raw(
+        self,
+        n_anchors: int = 20,
+        detections: list[tuple[float, float, float, float, float]] | None = None,
+    ) -> np.ndarray:
+        """Build a [1,5,n_anchors] tensor with optional high-confidence detections."""
+        raw = np.zeros((1, 5, n_anchors), dtype=np.float32)
+        for i, (cx, cy, w, h, conf) in enumerate(detections or []):
+            raw[0, 0, i] = cx
+            raw[0, 1, i] = cy
+            raw[0, 2, i] = w
+            raw[0, 3, i] = h
+            raw[0, 4, i] = conf
+        return raw
+
+    def test_semantic_parity_identical_outputs_pass(self) -> None:
+        raw = self._make_raw(detections=[(100, 100, 40, 60, 0.9)])
+        result = semantic_parity_case("test", raw, raw.copy(), conf_thresholds=(0.25,))
+        self.assertTrue(result["passed"])
+        self.assertTrue(result["by_threshold"]["0.25"]["passed"])
+
+    def test_semantic_parity_zero_detections_both_sides_pass(self) -> None:
+        # No detections on either side at this threshold — vacuous pass.
+        raw = self._make_raw(detections=[(100, 100, 40, 60, 0.05)])
+        result = semantic_parity_case("test", raw, raw.copy(), conf_thresholds=(0.25,))
+        self.assertTrue(result["passed"])
+
+    def test_semantic_parity_sub_pixel_raw_fail_is_semantic_pass(self) -> None:
+        # Same detection, but onnx output perturbed by 0.0006 (exceeds raw tol 0.0005).
+        # The perturbation shifts the box by <<0.25px and conf by <<0.001 — semantic PASS.
+        pt = self._make_raw(detections=[(100.000, 100.000, 40.0, 60.0, 0.85)])
+        onnx = self._make_raw(detections=[(100.001, 100.001, 40.0, 60.0, 0.8501)])
+        result = semantic_parity_case("DT4", pt, onnx, conf_thresholds=(0.25,))
+        self.assertTrue(result["passed"])
+        t = result["by_threshold"]["0.25"]
+        self.assertIsNotNone(t["center_diff_max_px"])
+        self.assertLess(t["center_diff_max_px"], 0.25)
+
+    def test_semantic_parity_different_count_fails(self) -> None:
+        # PyTorch outputs 1 detection; ONNX outputs 0.
+        pt = self._make_raw(detections=[(100, 100, 40, 60, 0.9)])
+        onnx = self._make_raw()  # all zeros → no detections
+        result = semantic_parity_case("bad_frame", pt, onnx, conf_thresholds=(0.25,))
+        self.assertFalse(result["passed"])
+        self.assertFalse(result["by_threshold"]["0.25"]["count_match"])
+
+    def test_semantic_parity_large_center_shift_fails(self) -> None:
+        # Same detection count but centre shifted by >0.25px.
+        pt = self._make_raw(detections=[(100.0, 100.0, 40.0, 60.0, 0.9)])
+        onnx = self._make_raw(detections=[(100.5, 100.5, 40.0, 60.0, 0.9)])
+        result = semantic_parity_case("shifted", pt, onnx, conf_thresholds=(0.25,))
+        self.assertFalse(result["passed"])
+        self.assertGreater(result["by_threshold"]["0.25"]["center_diff_max_px"], 0.25)
 
 
 if __name__ == "__main__":

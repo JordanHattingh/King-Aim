@@ -111,7 +111,7 @@ namespace Aimmy2.TestArena
             double width = ArenaCanvas.ActualWidth > 0 ? ArenaCanvas.ActualWidth : 900;
             double height = ArenaCanvas.ActualHeight > 0 ? ArenaCanvas.ActualHeight : 700;
             _scenario = new Scenario(kind, width, height);
-            _metricsRecorder = new ScenarioMetricsRecorder(kind.ToString());
+            _metricsRecorder = new ScenarioMetricsRecorder(kind.ToString(), kind, detectorExecuted: _aiManager != null);
 
             foreach (var target in _scenario.Targets)
             {

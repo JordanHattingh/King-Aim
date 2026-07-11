@@ -5,8 +5,10 @@
 
 .DESCRIPTION
     Runs all automated validation gates for the epoch-40 baseline artifact:
-    - Python unit tests (29 tests)
+    - Python unit tests (40 tests)
     - CPU ONNX parity  (validate_detector_onnx.py, CPUExecutionProvider)
+      Reports raw numerical parity AND semantic post-NMS detection parity.
+      Gate is driven by semantic parity; raw failure alongside semantic pass = WARN.
     - DirectML ONNX parity if C:\Tmp\dml_venv exists (run_dml_parity.py)
 
     Artifacts must be present at C:\KingAimTraining\baseline\yolov8-e040\
@@ -66,7 +68,7 @@ if (-not (Test-Path $OnnxFile)) {
 }
 
 # -- Gate 1: Python unit tests -----------------------------------------------
-Gate "Python unit tests (29)" {
+Gate "Python unit tests (40)" {
     python -m pytest (Join-Path $TrainingDir "tests") -q --tb=short
 }
 

@@ -14,8 +14,27 @@ public sealed record ArenaDetection(
     double ObservationAgeMs,
     PointF? GruPredictedCenter);
 
+/// <summary>
+/// Snapshot of all metrics recorded over one scenario run.
+///
+/// BenchmarkDomain clarifies what the numbers mean:
+///
+///   GameplayReplay — real gameplay frames were fed through the full YOLO + tracker
+///     pipeline.  DetectorMetricsGated=true: detection count, FP, and miss counts
+///     are actionable accuracy gates.
+///
+///   SyntheticTracking — coloured rectangles rendered in the arena.  YOLO detects
+///     nothing (rectangles are out-of-distribution).  DetectorMetricsGated=false:
+///     detection counts are expected to be zero and are not accuracy gates.
+///     TrackerMetricsGated=false until direct observation injection is implemented
+///     (see TODO in Scenario.cs ScenarioKindExtensions.TrackerMetricsGated).
+/// </summary>
 public sealed record ScenarioMetricsSummary(
     string Scenario,
+    string BenchmarkDomain,
+    bool DetectorExecuted,
+    bool DetectorMetricsGated,
+    bool TrackerMetricsGated,
     int Frames,
     int DetectionCount,
     int FalsePositives,
@@ -35,6 +54,10 @@ public sealed record ScenarioMetricsSummary(
 public sealed class ScenarioMetricsRecorder
 {
     private readonly string _scenario;
+    private readonly BenchmarkDomain _domain;
+    private readonly bool _detectorExecuted;
+    private readonly bool _detectorMetricsGated;
+    private readonly bool _trackerMetricsGated;
     private readonly double _matchRadiusPixels;
     private readonly Dictionary<string, int> _lastTrackByTarget = new();
     private readonly Dictionary<string, DateTime> _lostAtByTarget = new();
@@ -52,9 +75,17 @@ public sealed class ScenarioMetricsRecorder
     private int _identitySwitches;
     private int _trackLosses;
 
-    public ScenarioMetricsRecorder(string scenario, double matchRadiusPixels = 120)
+    public ScenarioMetricsRecorder(
+        string scenario,
+        ScenarioKind kind,
+        bool detectorExecuted = true,
+        double matchRadiusPixels = 120)
     {
         _scenario = scenario;
+        _domain = kind.Domain();
+        _detectorExecuted = detectorExecuted;
+        _detectorMetricsGated = kind.DetectorMetricsGated();
+        _trackerMetricsGated = kind.TrackerMetricsGated();
         _matchRadiusPixels = matchRadiusPixels;
     }
 
@@ -118,10 +149,26 @@ public sealed class ScenarioMetricsRecorder
     }
 
     public ScenarioMetricsSummary Summarize() => new(
-        _scenario, _frames, _detections, _falsePositives, _misses, _identitySwitches, _trackLosses,
-        Mean(_reacquisitionMs), Mean(_predictiveErrors), Mean(_gruErrors), Percentile(_observationAges, 0.95),
-        Percentile(_inferenceMs, 0.50), Percentile(_inferenceMs, 0.95), Percentile(_inferenceMs, 0.99),
-        Percentile(_frameAgeMs, 0.95), Percentile(_captureFps, 0.50));
+        _scenario,
+        _domain.ToString(),
+        _detectorExecuted,
+        _detectorMetricsGated,
+        _trackerMetricsGated,
+        _frames,
+        _detections,
+        _falsePositives,
+        _misses,
+        _identitySwitches,
+        _trackLosses,
+        Mean(_reacquisitionMs),
+        Mean(_predictiveErrors),
+        Mean(_gruErrors),
+        Percentile(_observationAges, 0.95),
+        Percentile(_inferenceMs, 0.50),
+        Percentile(_inferenceMs, 0.95),
+        Percentile(_inferenceMs, 0.99),
+        Percentile(_frameAgeMs, 0.95),
+        Percentile(_captureFps, 0.50));
 
     private static double Distance(PointF a, PointF b)
     {

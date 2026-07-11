@@ -9,6 +9,24 @@ namespace Aimmy2.TestArena
         Friendly,
     }
 
+    /// <summary>
+    /// Which type of benchmark produced this report.
+    ///
+    /// GameplayReplay: real game frames fed through the full YOLO + tracker pipeline.
+    ///   detector_metrics_gated = true.  This is the production accuracy gate.
+    ///
+    /// SyntheticTracking: synthetic coloured rectangles rendered in the arena.
+    ///   detector_metrics_gated = false (rectangles are OOD for a model trained on
+    ///   real gameplay, so zero detections are expected).
+    ///   TODO: bypass YOLO and inject synthetic observations directly into TrackManager
+    ///   so that tracker_metrics_gated can be set to true.
+    /// </summary>
+    public enum BenchmarkDomain
+    {
+        GameplayReplay,
+        SyntheticTracking,
+    }
+
     public sealed class ArenaTarget
     {
         public required string Id { get; init; }
@@ -20,6 +38,10 @@ namespace Aimmy2.TestArena
 
     public enum ScenarioKind
     {
+        // --- Synthetic tracking scenarios (BenchmarkDomain.SyntheticTracking) ---
+        // These render coloured rectangles to exercise the Kalman + GRU tracker.
+        // YOLO detects nothing on these inputs (OOD).  Once direct observation
+        // injection is implemented, tracker_metrics_gated will become true.
         StaticEnemy,
         MovingEnemyHorizontal,
         MovingEnemyVertical,
@@ -34,6 +56,38 @@ namespace Aimmy2.TestArena
         SuddenAcceleration,
         ThreeEnemiesConverging,
         NoTarget,
+
+        // --- Gameplay replay scenarios (BenchmarkDomain.GameplayReplay) ---
+        // Future: feed real gameplay frames through the full pipeline so detector
+        // accuracy metrics are meaningful.
+        // TODO: implement image-sequence loading and frame injection.
+        GameplayReplay,
+    }
+
+    public static class ScenarioKindExtensions
+    {
+        public static BenchmarkDomain Domain(this ScenarioKind kind) => kind switch
+        {
+            ScenarioKind.GameplayReplay => BenchmarkDomain.GameplayReplay,
+            _ => BenchmarkDomain.SyntheticTracking,
+        };
+
+        /// <summary>
+        /// Whether the detector runs on real inputs for this scenario and its
+        /// output accuracy metrics should be used as a gate.
+        /// </summary>
+        public static bool DetectorMetricsGated(this ScenarioKind kind) =>
+            kind.Domain() == BenchmarkDomain.GameplayReplay;
+
+        /// <summary>
+        /// Whether tracker metrics (identity switches, track losses, reacquisition)
+        /// are gated for this scenario.  Requires direct observation injection for
+        /// synthetic scenarios; currently false for all SyntheticTracking kinds.
+        /// </summary>
+        public static bool TrackerMetricsGated(this ScenarioKind kind) =>
+            // TODO: set true when SyntheticTracking scenarios bypass YOLO and inject
+            // synthetic observations directly into TrackManager.
+            false;
     }
 
     public sealed class Scenario
@@ -55,7 +109,8 @@ namespace Aimmy2.TestArena
 
         private static List<ArenaTarget> BuildInitialTargets(ScenarioKind kind, double w, double h) => kind switch
         {
-            ScenarioKind.NoTarget => new List<ArenaTarget>(),
+            ScenarioKind.NoTarget
+                or ScenarioKind.GameplayReplay => new List<ArenaTarget>(),
 
             ScenarioKind.TwoEnemies
                 or ScenarioKind.MultipleEnemiesCrossing
@@ -92,6 +147,7 @@ namespace Aimmy2.TestArena
             {
                 case ScenarioKind.StaticEnemy:
                 case ScenarioKind.NoTarget:
+                case ScenarioKind.GameplayReplay:
                     break;
 
                 case ScenarioKind.MovingEnemyHorizontal:

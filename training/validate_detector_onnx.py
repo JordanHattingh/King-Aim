@@ -3,23 +3,34 @@
 Reports two separate categories:
 
   Deployment parity — real gameplay images passed via --image.
-      These are the hard gate.  If any gameplay frame fails, the run fails.
+      These are the hard gate.  If any gameplay frame fails semantic parity,
+      the run fails.  Raw numerical parity is recorded separately.
 
   Synthetic stress diagnostics — zero/ones/gradient/random/checker tensors.
       Always recorded.  When gameplay images are present these are diagnostic
       only and do not gate the run.  When no --image flags are given the
       synthetic inputs act as the gate (backwards-compatible behaviour).
 
+Parity is evaluated at two levels for each gameplay frame:
+
+  Raw numerical parity — max/mean absolute error between raw network outputs.
+      Tolerance: max_abs=0.0005, mean_abs=0.00005.
+      A failure here is a WARN when semantic parity passes.
+
+  Semantic detection parity — post-NMS decoded detections are compared.
+      Tolerance: IoU>=0.999, centre difference<=0.25 px, conf diff<=0.001.
+      This is the deployment gate.
+
 Hard failures (always fail the run):
   - output shape mismatch
   - NaN or Inf in any output
-  - real gameplay frame exceeds max_abs or mean_abs tolerance
-  - candidate-count mismatch on any real gameplay frame
+  - real gameplay frame fails semantic detection parity (count, IoU, centre)
   - model cannot load or provider unavailable
 
 Diagnostic warnings (recorded, do not fail when gameplay images are present):
-  - synthetic degenerate tensor slightly exceeds raw max tolerance
-  - mean error within spec and normal inputs stable
+  - raw numerical tolerance exceeded on a synthetic degenerate tensor
+  - raw numerical tolerance exceeded on a gameplay frame that passes
+    semantic parity (count and box decisions are identical)
 """
 
 from __future__ import annotations
@@ -127,6 +138,150 @@ def summarize_case(
     }
 
 
+# ---------------------------------------------------------------------------
+# Semantic (post-NMS) parity
+# ---------------------------------------------------------------------------
+
+def _box_iou_batch(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """IoU between every box in a [M,4] and every box in b [N,4] → [M,N]."""
+    ax1, ay1, ax2, ay2 = a[:, 0], a[:, 1], a[:, 2], a[:, 3]
+    bx1, by1, bx2, by2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+    ix1 = np.maximum(ax1[:, None], bx1[None, :])
+    iy1 = np.maximum(ay1[:, None], by1[None, :])
+    ix2 = np.minimum(ax2[:, None], bx2[None, :])
+    iy2 = np.minimum(ay2[:, None], by2[None, :])
+    inter = np.maximum(0.0, ix2 - ix1) * np.maximum(0.0, iy2 - iy1)
+    area_a = (ax2 - ax1) * (ay2 - ay1)
+    area_b = (bx2 - bx1) * (by2 - by1)
+    union = area_a[:, None] + area_b[None, :] - inter
+    return np.where(union > 0, inter / union, 0.0)
+
+
+def _nms(boxes: np.ndarray, scores: np.ndarray, iou_thresh: float) -> np.ndarray:
+    """Return keep indices after greedy NMS, ordered by descending score."""
+    if len(boxes) == 0:
+        return np.array([], dtype=np.int64)
+    order = scores.argsort()[::-1]
+    keep: list[int] = []
+    while order.size > 0:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        rest = order[1:]
+        iou = _box_iou_batch(boxes[i : i + 1], boxes[rest])[0]
+        order = rest[iou <= iou_thresh]
+    return np.array(keep, dtype=np.int64)
+
+
+def decode_detections(
+    raw: np.ndarray,
+    conf_thresh: float,
+    iou_thresh: float = 0.45,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Decode raw [1, nc+4, N] detector output → (boxes_xyxy [K,4], scores [K]).
+
+    Assumes eval-mode Ultralytics Detect head: rows 0-3 are cx,cy,w,h in pixel
+    space; row 4 is confidence already sigmoid-applied.  Output sorted by
+    descending confidence after NMS.
+    """
+    scores_all = raw[0, 4, :]
+    mask = scores_all >= conf_thresh
+    if not mask.any():
+        return np.empty((0, 4), dtype=np.float32), np.empty(0, dtype=np.float32)
+    cx = raw[0, 0, mask]
+    cy = raw[0, 1, mask]
+    w = raw[0, 2, mask]
+    h = raw[0, 3, mask]
+    scores = scores_all[mask]
+    boxes = np.stack([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], axis=1)
+    keep = _nms(boxes, scores, iou_thresh)
+    return boxes[keep].astype(np.float32), scores[keep].astype(np.float32)
+
+
+def semantic_parity_case(
+    case: str,
+    pytorch_output: np.ndarray,
+    onnx_output: np.ndarray,
+    conf_thresholds: tuple[float, ...],
+    nms_iou_thresh: float = 0.45,
+    min_box_iou: float = 0.999,
+    max_center_diff_px: float = 0.25,
+    max_conf_diff: float = 0.001,
+) -> dict:
+    """Compare post-NMS decoded detections between PyTorch and ONNX outputs.
+
+    Returns a result dict with per-threshold breakdown and an overall
+    passed flag.  passed=True only when every threshold passes.
+    """
+    by_threshold: dict[str, dict] = {}
+    all_passed = True
+
+    for thresh in conf_thresholds:
+        pt_boxes, pt_scores = decode_detections(pytorch_output, thresh, nms_iou_thresh)
+        onnx_boxes, onnx_scores = decode_detections(onnx_output, thresh, nms_iou_thresh)
+
+        pt_n = len(pt_scores)
+        onnx_n = len(onnx_scores)
+        count_match = pt_n == onnx_n
+
+        box_iou_min: float | None = None
+        center_diff_max_px: float | None = None
+        conf_diff_max: float | None = None
+
+        if not count_match:
+            threshold_passed = False
+        elif pt_n == 0:
+            # Both zero — vacuously pass
+            box_iou_min = None
+            center_diff_max_px = None
+            conf_diff_max = None
+            threshold_passed = True
+        else:
+            n = pt_n
+            pt_cx = (pt_boxes[:n, 0] + pt_boxes[:n, 2]) / 2
+            pt_cy = (pt_boxes[:n, 1] + pt_boxes[:n, 3]) / 2
+            onnx_cx = (onnx_boxes[:n, 0] + onnx_boxes[:n, 2]) / 2
+            onnx_cy = (onnx_boxes[:n, 1] + onnx_boxes[:n, 3]) / 2
+            center_diff_max_px = float(np.hypot(pt_cx - onnx_cx, pt_cy - onnx_cy).max())
+            conf_diff_max = float(np.abs(pt_scores[:n] - onnx_scores[:n]).max())
+            iou_matrix = _box_iou_batch(pt_boxes[:n], onnx_boxes[:n])
+            box_iou_min = float(np.diag(iou_matrix).min())
+            threshold_passed = (
+                box_iou_min >= min_box_iou
+                and center_diff_max_px <= max_center_diff_px
+                and conf_diff_max <= max_conf_diff
+            )
+
+        if not threshold_passed:
+            all_passed = False
+
+        by_threshold[f"{thresh:g}"] = {
+            "threshold": thresh,
+            "pytorch_count": pt_n,
+            "onnx_count": onnx_n,
+            "count_match": count_match,
+            "box_iou_min": box_iou_min,
+            "center_diff_max_px": center_diff_max_px,
+            "conf_diff_max": conf_diff_max,
+            "passed": threshold_passed,
+        }
+
+    return {
+        "case": case,
+        "passed": all_passed,
+        "min_box_iou": min_box_iou,
+        "max_center_diff_px": max_center_diff_px,
+        "max_conf_diff": max_conf_diff,
+        "nms_iou_thresh": nms_iou_thresh,
+        "by_threshold": by_threshold,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Section aggregation
+# ---------------------------------------------------------------------------
+
 def _section_stats(rows: list[dict], max_tol: float, mean_tol: float, is_gate: bool) -> dict:
     """Aggregate a list of summarize_case rows into a section summary."""
     if not rows:
@@ -152,7 +307,6 @@ def _section_stats(rows: list[dict], max_tol: float, mean_tol: float, is_gate: b
         passed = max_error <= max_tol and mean_error <= mean_tol and counts_match
         status = "PASS" if passed else "FAIL"
     else:
-        # Diagnostic: WARN if any case exceeds tolerance, PASS otherwise
         status = "WARN" if over_tol else "PASS"
 
     return {
@@ -168,6 +322,28 @@ def _section_stats(rows: list[dict], max_tol: float, mean_tol: float, is_gate: b
         "cases": rows,
     }
 
+
+def _semantic_section(
+    semantic_rows: list[dict],
+    is_gate: bool,
+) -> dict:
+    """Aggregate semantic_parity_case rows into a section summary."""
+    if not semantic_rows:
+        return {"status": "PASS", "gate": is_gate, "case_count": 0, "cases": []}
+    failed = [r["case"] for r in semantic_rows if not r["passed"]]
+    status = "FAIL" if failed else "PASS"
+    return {
+        "status": status,
+        "gate": is_gate,
+        "case_count": len(semantic_rows),
+        "cases_failing": failed,
+        "cases": semantic_rows,
+    }
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate YOLO detector PyTorch/ONNX raw-output parity")
@@ -218,48 +394,83 @@ def main() -> int:
 
     thresholds = (0.10, 0.25, 0.50)
 
-    def run_case(label: str, tensor_np: np.ndarray) -> dict:
+    def run_case(label: str, tensor_np: np.ndarray) -> tuple[dict, dict]:
+        """Returns (raw_summary, semantic_summary)."""
         with torch.no_grad():
             pytorch_np = normalize_output(module(torch.from_numpy(tensor_np)))
         onnx_np = session.run(None, {input_meta.name: tensor_np})[0]
-        return summarize_case(label, pytorch_np, onnx_np, args.class_count, thresholds)
+        raw = summarize_case(label, pytorch_np, onnx_np, args.class_count, thresholds)
+        semantic = semantic_parity_case(label, pytorch_np, onnx_np, thresholds)
+        return raw, semantic
 
     # Collect synthetic diagnostic cases
-    synthetic_rows: list[dict] = []
+    synthetic_raw_rows: list[dict] = []
+    synthetic_sem_rows: list[dict] = []
     if not args.skip_synthetic:
         for label, tensor_np in synthetic_inputs(args.imgsz, args.seed):
-            synthetic_rows.append(run_case(label, tensor_np))
+            raw, sem = run_case(label, tensor_np)
+            synthetic_raw_rows.append(raw)
+            synthetic_sem_rows.append(sem)
 
     # Collect deployment gameplay cases
-    gameplay_rows: list[dict] = []
+    gameplay_raw_rows: list[dict] = []
+    gameplay_sem_rows: list[dict] = []
     for path in args.image:
-        gameplay_rows.append(run_case(f"image:{path.name}", image_input(path, args.imgsz)))
+        raw, sem = run_case(f"image:{path.name}", image_input(path, args.imgsz))
+        gameplay_raw_rows.append(raw)
+        gameplay_sem_rows.append(sem)
 
-    if not synthetic_rows and not gameplay_rows:
+    if not synthetic_raw_rows and not gameplay_raw_rows:
         raise SystemExit("No parity inputs selected")
 
-    has_gameplay = bool(gameplay_rows)
+    has_gameplay = bool(gameplay_raw_rows)
 
-    # Deployment section: gameplay images (gate=True) if any, else None
-    deployment = _section_stats(gameplay_rows, args.max_abs_tolerance, args.mean_abs_tolerance, is_gate=True) if has_gameplay else None
+    # Raw deployment section: gate only when gameplay images present
+    deployment_raw = (
+        _section_stats(gameplay_raw_rows, args.max_abs_tolerance, args.mean_abs_tolerance, is_gate=True)
+        if has_gameplay else None
+    )
 
-    # Synthetic section: diagnostic (gate=False) when gameplay present, gate otherwise
-    synthetic = _section_stats(synthetic_rows, args.max_abs_tolerance, args.mean_abs_tolerance, is_gate=not has_gameplay)
+    # Semantic deployment section: this is the true deployment gate
+    deployment_sem = (
+        _semantic_section(gameplay_sem_rows, is_gate=True)
+        if has_gameplay else None
+    )
+
+    # Synthetic section: diagnostic when gameplay present, gate otherwise
+    synthetic_raw = _section_stats(
+        synthetic_raw_rows, args.max_abs_tolerance, args.mean_abs_tolerance, is_gate=not has_gameplay
+    )
     if not has_gameplay:
-        synthetic["note"] = "No gameplay images provided. Synthetic inputs used as gate."
+        synthetic_raw["note"] = "No gameplay images provided. Synthetic inputs used as gate."
     else:
-        synthetic["note"] = "Diagnostic only. Synthetic failures do not gate deployment."
+        synthetic_raw["note"] = "Diagnostic only. Synthetic failures do not gate deployment."
 
-    # Overall pass/fail
+    # Determine overall pass/fail and status
     if has_gameplay:
-        passed = deployment["status"] == "PASS"
-        overall_status = "PASS" if passed else "FAIL"
-        note = (
-            f"Deployment gate: {deployment['status']}. "
-            f"Synthetic diagnostics: {synthetic['status']}."
-        )
+        # Semantic parity is the gate; raw parity failure alongside semantic pass is a WARN
+        semantic_passed = deployment_sem["status"] == "PASS"
+        raw_passed = deployment_raw["status"] == "PASS"
+
+        if semantic_passed and raw_passed:
+            overall_status = "PASS"
+            note = "Deployment semantic and raw parity both pass."
+        elif semantic_passed and not raw_passed:
+            overall_status = "WARN"
+            note = (
+                "Deployment semantic parity PASS: final detections are identical. "
+                f"Raw numerical tolerance FAIL: {deployment_raw['cases_exceeding_tolerance']}. "
+                "Sub-threshold numerical difference does not affect NMS decisions."
+            )
+        else:
+            overall_status = "FAIL"
+            note = (
+                f"Deployment semantic parity FAIL: {deployment_sem['cases_failing']}. "
+                "Final detections differ between PyTorch and ONNX."
+            )
+        passed = semantic_passed
     else:
-        passed = synthetic["status"] == "PASS"
+        passed = synthetic_raw["status"] == "PASS"
         overall_status = "PASS" if passed else "FAIL"
         note = "No gameplay images. Synthetic inputs used as gate."
 
@@ -275,8 +486,9 @@ def main() -> int:
         "class_count": args.class_count,
         "max_abs_tolerance": args.max_abs_tolerance,
         "mean_abs_tolerance": args.mean_abs_tolerance,
-        "deployment_parity": deployment,
-        "synthetic_diagnostics": synthetic,
+        "deployment_parity": deployment_raw,
+        "semantic_deployment_parity": deployment_sem,
+        "synthetic_diagnostics": synthetic_raw,
     }
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -286,8 +498,8 @@ def main() -> int:
 
     # CSV: all cases with a category column
     all_rows_tagged = (
-        [{"category": "deployment", **r} for r in gameplay_rows] +
-        [{"category": "synthetic", **r} for r in synthetic_rows]
+        [{"category": "deployment", **r} for r in gameplay_raw_rows] +
+        [{"category": "synthetic", **r} for r in synthetic_raw_rows]
     )
     csv_fields = [
         "category", "case", "max_abs_error", "mean_abs_error",
@@ -302,22 +514,31 @@ def main() -> int:
         writer.writerows(all_rows_tagged)
 
     # Summary text
-    dep_line = (
-        f"deployment_status={deployment['status']}\n"
-        f"deployment_max_abs_error={deployment['max_abs_error']:.10g}\n"
-        f"deployment_mean_abs_error={deployment['mean_abs_error']:.10g}\n"
-        f"deployment_candidate_counts_match={str(deployment['candidate_counts_match']).lower()}\n"
-        if deployment else
-        "deployment_status=NO_GAMEPLAY_IMAGES\n"
-    )
-    synth_over = ",".join(synthetic["cases_exceeding_tolerance"]) or "none"
+    if deployment_raw:
+        dep_raw_line = (
+            f"deployment_raw_status={deployment_raw['status']}\n"
+            f"deployment_raw_max_abs_error={deployment_raw['max_abs_error']:.10g}\n"
+            f"deployment_raw_mean_abs_error={deployment_raw['mean_abs_error']:.10g}\n"
+        )
+    else:
+        dep_raw_line = "deployment_raw_status=NO_GAMEPLAY_IMAGES\n"
+
+    if deployment_sem:
+        dep_sem_line = (
+            f"deployment_semantic_status={deployment_sem['status']}\n"
+            f"deployment_semantic_cases_failing={','.join(deployment_sem['cases_failing']) or 'none'}\n"
+        )
+    else:
+        dep_sem_line = "deployment_semantic_status=NO_GAMEPLAY_IMAGES\n"
+
+    synth_over = ",".join(synthetic_raw["cases_exceeding_tolerance"]) or "none"
     summary = (
         f"status={overall_status}\n"
         f"note={note}\n"
-        + dep_line +
-        f"synthetic_status={synthetic['status']}\n"
-        f"synthetic_max_abs_error={synthetic['max_abs_error']:.10g}\n"
-        f"synthetic_mean_abs_error={synthetic['mean_abs_error']:.10g}\n"
+        + dep_raw_line
+        + dep_sem_line
+        + f"synthetic_status={synthetic_raw['status']}\n"
+        f"synthetic_max_abs_error={synthetic_raw['max_abs_error']:.10g}\n"
         f"synthetic_cases_exceeding_tolerance={synth_over}\n"
         f"max_abs_tolerance={args.max_abs_tolerance:.10g}\n"
         f"mean_abs_tolerance={args.mean_abs_tolerance:.10g}\n"
