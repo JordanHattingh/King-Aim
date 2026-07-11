@@ -23,12 +23,14 @@ namespace Aimmy2.Tests
     ///   dotnet test --filter "Category!=Hardware"
     ///
     /// Path configuration (environment variables):
-    ///   KINGAIM_MODELS_ROOT   — base directory for checkpoint subdirs
-    ///                           (default: C:\KingAimTraining\baseline)
-    ///   KINGAIM_DML_IMAGE_DIR — directory containing DT*.png deployment images
-    ///                           (default: C:\KingAimTraining\benchmark\deployment-v1)
+    ///   KINGAIM_MODELS_ROOT    — base directory for checkpoint subdirs
+    ///                            (default: C:\KingAimTraining\baseline)
+    ///   KINGAIM_DML_IMAGE_DIR  — directory containing DT*.png deployment images
+    ///                            (default: C:\KingAimTraining\benchmark\deployment-v1)
     ///   KINGAIM_DML_REPORT_DIR — directory to write JSON reports
-    ///                           (default: C:\KingAimTraining)
+    ///                            (default: C:\KingAimTraining)
+    ///   KINGAIM_DML_RUN_INDEX  — 1/2/3: appended to report filename so repeated runs
+    ///                            do not overwrite each other.  Omit for a single run.
     ///
     /// Provider evidence:
     ///   Session is created exclusively via AppendExecutionProvider_DML(); a
@@ -91,46 +93,77 @@ namespace Aimmy2.Tests
         [Fact] public void DirectMl_E040_Gate() { if (IsEnabled()) RunModelGate(E040OnnxPath, "E040"); }
 
         /// <summary>
-        /// After both model gates have produced reports, assert E050 steady-state
-        /// latency does not regress beyond E040 × 1.10.
-        /// Requires both report files to exist (run the two gates first).
+        /// Counterbalanced latency comparison using three runs per model.
+        ///
+        /// Requires six report files written with KINGAIM_DML_RUN_INDEX=1/2/3:
+        ///   directml_gate_e040_run1.json  directml_gate_e050_run1.json
+        ///   directml_gate_e040_run2.json  directml_gate_e050_run2.json
+        ///   directml_gate_e040_run3.json  directml_gate_e050_run3.json
+        ///
+        /// Run order (separate fresh dotnet-test process each time):
+        ///   RUN_INDEX=1 E040  →  RUN_INDEX=1 E050
+        ///   RUN_INDEX=2 E050  →  RUN_INDEX=2 E040
+        ///   RUN_INDEX=3 E040  →  RUN_INDEX=3 E050
+        ///
+        /// Gate: median(E050 p95) <= median(E040 p95) × 1.10
+        /// Also reports min/median/max for each model so variance is visible.
         /// </summary>
         [Fact]
-        public void DirectMl_LatencyComparison()
+        public void DirectMl_LatencyComparison_Balanced()
         {
             if (!IsEnabled()) return;
 
-            string e040Report = Path.Combine(ReportDir, "directml_gate_e040.json");
-            string e050Report = Path.Combine(ReportDir, "directml_gate_e050.json");
+            double[] e040P95 = ReadRunP95("e040");
+            double[] e050P95 = ReadRunP95("e050");
+            double[] e040P50 = ReadRunP50("e040");
+            double[] e050P50 = ReadRunP50("e050");
 
-            Assert.True(File.Exists(e040Report),
-                $"E040 report not found: {e040Report} — run DirectMl_E040_Gate first.");
-            Assert.True(File.Exists(e050Report),
-                $"E050 report not found: {e050Report} — run DirectMl_E050_Gate first.");
+            double medE040P95 = Median(e040P95);
+            double medE050P95 = Median(e050P95);
+            double medE040P50 = Median(e040P50);
+            double medE050P50 = Median(e050P50);
 
-            using var e040Doc = JsonDocument.Parse(File.ReadAllText(e040Report));
-            using var e050Doc = JsonDocument.Parse(File.ReadAllText(e050Report));
+            output.WriteLine($"E040 p95  min={e040P95.Min():F2}  median={medE040P95:F2}  max={e040P95.Max():F2} ms");
+            output.WriteLine($"E050 p95  min={e050P95.Min():F2}  median={medE050P95:F2}  max={e050P95.Max():F2} ms");
+            output.WriteLine($"E040 p50  min={e040P50.Min():F2}  median={medE040P50:F2}  max={e040P50.Max():F2} ms");
+            output.WriteLine($"E050 p50  min={e050P50.Min():F2}  median={medE050P50:F2}  max={e050P50.Max():F2} ms");
 
-            double e040P95 = e040Doc.RootElement.GetProperty("latency_p95_ms").GetDouble();
-            double e050P95 = e050Doc.RootElement.GetProperty("latency_p95_ms").GetDouble();
-            double e040P50 = e040Doc.RootElement.GetProperty("latency_p50_ms").GetDouble();
-            double e050P50 = e050Doc.RootElement.GetProperty("latency_p50_ms").GetDouble();
-
-            double threshP95 = e040P95 * 1.10;
-            double threshP50 = e040P50 * 1.10;
-
-            output.WriteLine($"E040  p50={e040P50:F2} ms  p95={e040P95:F2} ms");
-            output.WriteLine($"E050  p50={e050P50:F2} ms  p95={e050P95:F2} ms");
+            double threshP95 = medE040P95 * 1.10;
+            double threshP50 = medE040P50 * 1.10;
             output.WriteLine($"Threshold (×1.10)  p50≤{threshP50:F2}  p95≤{threshP95:F2}");
 
-            bool p50Ok = e050P50 <= threshP50;
-            bool p95Ok = e050P95 <= threshP95;
+            bool p50Ok = medE050P50 <= threshP50;
+            bool p95Ok = medE050P95 <= threshP95;
             output.WriteLine($"p50: {(p50Ok ? "PASS" : "FAIL")}   p95: {(p95Ok ? "PASS" : "FAIL")}");
 
             Assert.True(p50Ok,
-                $"E050 p50={e050P50:F2} ms exceeds E040 p50 × 1.10 = {threshP50:F2} ms");
+                $"Median E050 p50={medE050P50:F2} ms exceeds median E040 p50 × 1.10 = {threshP50:F2} ms");
             Assert.True(p95Ok,
-                $"E050 p95={e050P95:F2} ms exceeds E040 p95 × 1.10 = {threshP95:F2} ms");
+                $"Median E050 p95={medE050P95:F2} ms exceeds median E040 p95 × 1.10 = {threshP95:F2} ms");
+        }
+
+        private double[] ReadRunP95(string label) => ReadRunMetric(label, "latency_p95_ms");
+        private double[] ReadRunP50(string label) => ReadRunMetric(label, "latency_p50_ms");
+
+        private double[] ReadRunMetric(string label, string field)
+        {
+            var values = new List<double>();
+            for (int i = 1; i <= 3; i++)
+            {
+                string path = Path.Combine(ReportDir, $"directml_gate_{label}_run{i}.json");
+                Assert.True(File.Exists(path),
+                    $"Run {i} report not found: {path} — run DirectMl_{label.ToUpperInvariant()}_Gate with KINGAIM_DML_RUN_INDEX={i} first.");
+                using var doc = JsonDocument.Parse(File.ReadAllText(path));
+                values.Add(doc.RootElement.GetProperty(field).GetDouble());
+            }
+            return values.ToArray();
+        }
+
+        private static double Median(double[] values)
+        {
+            var sorted = values.OrderBy(v => v).ToArray();
+            int n = sorted.Length;
+            return (n % 2 == 1) ? sorted[n / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0;
         }
 
         // ── shared harness ────────────────────────────────────────────────────
@@ -306,7 +339,10 @@ namespace Aimmy2.Tests
 
             // ── Write report ─────────────────────────────────────────────────
             Directory.CreateDirectory(ReportDir);
-            string reportPath = Path.Combine(ReportDir, $"directml_gate_{label.ToLowerInvariant()}.json");
+            string runSuffix = Environment.GetEnvironmentVariable("KINGAIM_DML_RUN_INDEX") is string idx
+                               && int.TryParse(idx, out int runNum) && runNum >= 1
+                               ? $"_run{runNum}" : string.Empty;
+            string reportPath = Path.Combine(ReportDir, $"directml_gate_{label.ToLowerInvariant()}{runSuffix}.json");
             var report = new
             {
                 model                    = onnxPath,
