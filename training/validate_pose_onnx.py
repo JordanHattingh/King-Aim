@@ -1,5 +1,5 @@
 """
-King Aim pose export parity checker.
+King Aim detector/pose export parity checker.
 
 Compares raw PyTorch and ONNX Runtime CPU outputs from the SAME preprocessed input.
 Use this before setting keypoint_visibility_is_logit in manifest.json. The script
@@ -19,6 +19,7 @@ import onnxruntime as ort
 import torch
 from PIL import Image
 from ultralytics import YOLO
+from contracts import yolo_keypoint_visibility_rows, yolo_output_channel_count
 
 
 def preprocess(image_path: Path, size: int) -> np.ndarray:
@@ -28,13 +29,14 @@ def preprocess(image_path: Path, size: int) -> np.ndarray:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate YOLO pose PyTorch/ONNX raw-output parity")
+    parser = argparse.ArgumentParser(description="Validate YOLO detector/pose PyTorch/ONNX raw-output parity")
     parser.add_argument("--pt", required=True)
     parser.add_argument("--onnx", required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--imgsz", type=int, default=512)
     parser.add_argument("--class-count", type=int, default=1)
     parser.add_argument("--keypoint-count", type=int, default=4)
+    parser.add_argument("--task", choices=("detect", "pose"), default="pose")
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--tolerance", type=float, default=1e-4)
     args = parser.parse_args()
@@ -65,35 +67,46 @@ def main() -> None:
     print(f"max_abs_error={max_error:.8g}")
     print(f"mean_abs_error={mean_error:.8g}")
 
-    expected_channels = 4 + args.class_count + args.keypoint_count * 3
+    expected_channels = yolo_output_channel_count(args.task, args.class_count, args.keypoint_count)
     if pytorch_np.ndim != 3 or pytorch_np.shape[1] != expected_channels:
         raise SystemExit(
-            f"Expected [1,{expected_channels},N] for yolo-pose-kpt-v1; got {pytorch_np.shape}"
+            f"Expected [1,{expected_channels},N] for task={args.task}; got {pytorch_np.shape}"
         )
 
-    visibility_rows = [4 + args.class_count + keypoint_index * 3 + 2 for keypoint_index in range(args.keypoint_count)]
-    vis = onnx_output[:, visibility_rows, :]
-    print(
-        "raw_visibility: "
-        f"min={vis.min():.6f} p01={np.quantile(vis, 0.01):.6f} "
-        f"median={np.median(vis):.6f} p99={np.quantile(vis, 0.99):.6f} max={vis.max():.6f}"
-    )
-    if vis.min() >= 0.0 and vis.max() <= 1.0:
-        print("Visibility values are already bounded 0..1 on this export. Keep keypoint_visibility_is_logit=false.")
+    visibility_min = None
+    visibility_max = None
+    if args.task == "pose":
+        if args.keypoint_count <= 0:
+            raise SystemExit("Pose validation requires --keypoint-count greater than zero")
+        visibility_rows = yolo_keypoint_visibility_rows(args.class_count, args.keypoint_count)
+        vis = onnx_output[:, visibility_rows, :]
+        visibility_min = float(vis.min())
+        visibility_max = float(vis.max())
+        print(
+            "raw_visibility: "
+            f"min={vis.min():.6f} p01={np.quantile(vis, 0.01):.6f} "
+            f"median={np.median(vis):.6f} p99={np.quantile(vis, 0.99):.6f} max={vis.max():.6f}"
+        )
+        if vis.min() >= 0.0 and vis.max() <= 1.0:
+            print("Visibility values are already bounded 0..1 on this export. Keep keypoint_visibility_is_logit=false.")
+        else:
+            print("Visibility values leave 0..1. Inspect exporter semantics before setting keypoint_visibility_is_logit=true.")
     else:
-        print("Visibility values leave 0..1. Inspect exporter semantics before setting keypoint_visibility_is_logit=true.")
+        print("Detector task: keypoint visibility statistics skipped.")
     report = {
+        "task": args.task,
         "pytorch_shape": list(pytorch_np.shape), "onnx_shape": list(onnx_output.shape),
         "max_abs_error": max_error, "mean_abs_error": mean_error, "tolerance": args.tolerance,
         "status": "PASS" if max_error <= args.tolerance else "FAIL",
-        "visibility_min": float(vis.min()), "visibility_max": float(vis.max()),
+        "visibility_min": visibility_min, "visibility_max": visibility_max,
     }
     if args.output_dir:
         args.output_dir.mkdir(parents=True, exist_ok=True)
-        (args.output_dir / "pose_parity_report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-        with (args.output_dir / "pose_parity_report.csv").open("w", encoding="utf-8", newline="") as handle:
+        report_prefix = "detector_parity" if args.task == "detect" else "pose_parity"
+        (args.output_dir / f"{report_prefix}_report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        with (args.output_dir / f"{report_prefix}_report.csv").open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=report.keys()); writer.writeheader(); writer.writerow(report)
-        (args.output_dir / "pose_parity_summary.txt").write_text(
+        (args.output_dir / f"{report_prefix}_summary.txt").write_text(
             f"status={report['status']}\nmax_abs_error={max_error:.8g}\ntolerance={args.tolerance:.8g}\n", encoding="utf-8"
         )
     if max_error > args.tolerance:

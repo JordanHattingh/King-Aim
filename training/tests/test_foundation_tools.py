@@ -14,6 +14,7 @@ sys.path.insert(0, str(TRAINING / "data_acquisition"))
 from foundation import atomic_json, hash_tree, sha256_file
 from data_acquisition.group_dataset_sources import split_for
 from tools.audit_pose_annotations import audit
+from contracts import yolo_keypoint_visibility_rows, yolo_output_channel_count
 
 
 class FoundationToolTests(unittest.TestCase):
@@ -55,6 +56,32 @@ class FoundationToolTests(unittest.TestCase):
             (root / "images/train/sample.jpg").write_bytes(b"image")
             (root / "labels/train/sample.txt").write_text("0 0.5 0.5\n", encoding="utf-8")
             self.assertEqual("field_count", audit(root)[0]["code"])
+
+    def test_parity_contract_supports_detector_without_visibility_rows(self) -> None:
+        self.assertEqual(5, yolo_output_channel_count("detect", class_count=1, keypoint_count=0))
+        self.assertEqual([], yolo_keypoint_visibility_rows(class_count=1, keypoint_count=0))
+
+    def test_parity_contract_preserves_four_keypoint_pose_shape(self) -> None:
+        self.assertEqual(17, yolo_output_channel_count("pose", class_count=1, keypoint_count=4))
+        self.assertEqual([7, 10, 13, 16], yolo_keypoint_visibility_rows(class_count=1, keypoint_count=4))
+
+    def test_baseline_exporter_uses_requested_epoch_in_manifest_id(self) -> None:
+        exporter_path = TRAINING / "export_yolov8_baseline.py"
+        spec = importlib.util.spec_from_file_location(
+            "export_yolov8_baseline_under_test",
+            exporter_path,
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        self.assertEqual("kingaim-yolov8-baseline-e040", module.baseline_id(40))
+        self.assertEqual("kingaim-yolov8-baseline-e050", module.baseline_id(50))
+
+        with self.assertRaises(ValueError):
+            module.baseline_id(0)
 
 
 if __name__ == "__main__":

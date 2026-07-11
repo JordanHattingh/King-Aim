@@ -51,3 +51,15 @@ MOVEMENT_FEATURE_FIELDS = (
     "prev_vy",
 )
 MOVEMENT_TARGET_FIELDS = ("human_vx", "human_vy")
+
+
+def yolo_output_channel_count(task: str, class_count: int, keypoint_count: int = 0) -> int:
+    if task not in {"detect", "pose"}:
+        raise ValueError(f"Unsupported YOLO task: {task}")
+    if class_count <= 0 or keypoint_count < 0:
+        raise ValueError("class_count must be positive and keypoint_count non-negative")
+    return 4 + class_count + (keypoint_count * 3 if task == "pose" else 0)
+
+
+def yolo_keypoint_visibility_rows(class_count: int, keypoint_count: int) -> list[int]:
+    return [4 + class_count + keypoint_index * 3 + 2 for keypoint_index in range(keypoint_count)]
