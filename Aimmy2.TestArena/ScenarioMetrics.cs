@@ -53,6 +53,12 @@ public sealed record ScenarioMetricsSummary(
     int    MissedDetections,
     int    IdentitySwitches,
     int    TrackLosses,
+    int    PositionGateMissFrames,
+    int    AssociationLossEvents,
+    int    SameTrackOutsideGateFrames,
+    int    ConfirmedTrackExpiryEvents,
+    double MaximumPositionErrorPixels,
+    int    MaximumConsecutivePositionMissFrames,
     double MeanReacquisitionMs,
     double MeanPredictiveErrorPixels,
     double MeanGruErrorPixels,
@@ -122,6 +128,15 @@ public sealed class ScenarioMetricsRecorder
     private int _misses;
     private int _identitySwitches;
     private int _trackLosses;
+    private int _positionGateMissFrames;
+    private int _associationLossEvents;
+    private int _sameTrackOutsideGateFrames;
+    private int _confirmedTrackExpiryEvents;
+    private double _maximumPositionErrorPixels;
+    private int _maximumConsecutivePositionMissFrames;
+    private readonly Dictionary<string, int> _consecutivePositionMissFrames = new();
+    private readonly HashSet<string> _associationLostTargets = new();
+    private readonly HashSet<string> _confirmedExpiredTargets = new();
     // Occlusion tracking.
     private int _occlusionFrames;
     private bool _trackIdPreservedAfterOcclusion = true;
@@ -284,6 +299,37 @@ public sealed class ScenarioMetricsRecorder
             if (di < 0)
             {
                 _misses++;
+                int consecutiveMisses = _consecutivePositionMissFrames.GetValueOrDefault(target.Id) + 1;
+                _consecutivePositionMissFrames[target.Id] = consecutiveMisses;
+                _maximumConsecutivePositionMissFrames = Math.Max(_maximumConsecutivePositionMissFrames, consecutiveMisses);
+
+                ArenaDetection? sameTrack = null;
+                if (_lastTrackByTarget.TryGetValue(target.Id, out int expectedTrackId))
+                    sameTrack = detections.FirstOrDefault(d => d.TrackId == expectedTrackId);
+
+                if (sameTrack != null)
+                {
+                    double positionError = Distance(target.Center, sameTrack.Center);
+                    _maximumPositionErrorPixels = Math.Max(_maximumPositionErrorPixels, positionError);
+                    if (positionError > _matchRadiusPixels)
+                    {
+                        _positionGateMissFrames++;
+                        _sameTrackOutsideGateFrames++;
+                        if (!_associationLostTargets.Contains(target.Id))
+                            BeginContinuityTrace("same_track_outside_gate", target.Id, expectedTrackId, snap);
+                    }
+                }
+                else if (_lastTrackByTarget.ContainsKey(target.Id) && _confirmedExpiredTargets.Add(target.Id))
+                {
+                    _confirmedTrackExpiryEvents++;
+                    BeginContinuityTrace("confirmed_track_expiry", target.Id, _lastTrackByTarget[target.Id], snap);
+                }
+
+                if (_associationLostTargets.Add(target.Id))
+                {
+                    _associationLossEvents++;
+                    BeginContinuityTrace("association_lost", target.Id, _lastTrackByTarget.GetValueOrDefault(target.Id), snap);
+                }
                 if (_lastTrackByTarget.ContainsKey(target.Id) && !_lostAtByTarget.ContainsKey(target.Id))
                 {
                     _lostAtByTarget[target.Id] = timestamp;
@@ -297,8 +343,14 @@ public sealed class ScenarioMetricsRecorder
             }
 
             ArenaDetection match = detections[di];
+            if (_associationLostTargets.Contains(target.Id))
+                BeginContinuityTrace("association_restored", target.Id, match.TrackId, snap);
+            _consecutivePositionMissFrames[target.Id] = 0;
+            _associationLostTargets.Remove(target.Id);
+            _confirmedExpiredTargets.Remove(target.Id);
             matchedDetections.Add(di);
             double bestDistance = Distance(target.Center, match.Center);
+            _maximumPositionErrorPixels = Math.Max(_maximumPositionErrorPixels, bestDistance);
 
             if (_lastTrackByTarget.TryGetValue(target.Id, out int previousTrack) && previousTrack != match.TrackId)
             {
@@ -457,7 +509,7 @@ public sealed class ScenarioMetricsRecorder
             Directory.CreateDirectory(SwitchTracePath);
             string safeScenario = string.Concat(_scenario.Select(c => char.IsLetterOrDigit(c) ? c : '_'));
             string file = Path.Combine(SwitchTracePath,
-                $"{safeScenario}_{trace.TargetId}_sw{_switchTracesWritten + 1}_old{trace.OldTrackId}_new{trace.NewTrackId}.csv");
+                $"{safeScenario}_{trace.TargetId}_{trace.EventKind}_{_switchTracesWritten + 1}_old{trace.OldTrackId}_new{trace.NewTrackId}.csv");
             var sb = new StringBuilder();
             sb.AppendLine("FrameIndex,Role,Timestamp,TargetId,TargetX,TargetY,AssignedTrackId,TrackX,TrackY,DistancePx,IsExtrapolated,ObsAgeMs,GruX,GruY,GruErrPx");
             foreach ((FrameSnap s, string role) in trace.Rows)
@@ -532,6 +584,12 @@ public sealed class ScenarioMetricsRecorder
         MissedDetections:         _misses,
         IdentitySwitches:         _identitySwitches,
         TrackLosses:              _trackLosses,
+        PositionGateMissFrames:   _positionGateMissFrames,
+        AssociationLossEvents:    _associationLossEvents,
+        SameTrackOutsideGateFrames: _sameTrackOutsideGateFrames,
+        ConfirmedTrackExpiryEvents: _confirmedTrackExpiryEvents,
+        MaximumPositionErrorPixels: _maximumPositionErrorPixels,
+        MaximumConsecutivePositionMissFrames: _maximumConsecutivePositionMissFrames,
         MeanReacquisitionMs:      Mean(_reacquisitionMs),
         MeanPredictiveErrorPixels: Mean(_predictiveErrors),
         MeanGruErrorPixels:       Mean(_gruErrors),
@@ -570,12 +628,29 @@ public sealed class ScenarioMetricsRecorder
 
     private sealed class SwitchTrace
     {
+        public string EventKind = "identity_switch";
         public string TargetId = "";
         public int OldTrackId;
         public int NewTrackId;
         public int SwitchFrameIndex;
         public List<(FrameSnap Snap, string Role)> Rows = new();
         public int AfterRemaining = SwitchWindowAfter;
+    }
+
+    private void BeginContinuityTrace(string eventKind, string targetId, int trackId, FrameSnap snap)
+    {
+        var trace = new SwitchTrace
+        {
+            EventKind = eventKind,
+            TargetId = targetId,
+            OldTrackId = trackId,
+            NewTrackId = trackId,
+            SwitchFrameIndex = snap.FrameIndex,
+        };
+        foreach (FrameSnap buffered in _snapBuffer)
+            trace.Rows.Add((buffered, "before"));
+        trace.Rows.Add((snap, eventKind));
+        _pendingSwitchTraces.Add(trace);
     }
 
     /// <summary>

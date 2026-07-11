@@ -19,6 +19,28 @@ public sealed class ScenarioMetricsTests
         }
     }
 
+    [Fact]
+    public void ContinuityMetrics_DistinguishOutsideGateFromConfirmedExpiry()
+    {
+        var recorder = new ScenarioMetricsRecorder("Continuity", matchRadiusPixels: 120);
+        DateTime now = DateTime.UtcNow;
+        ArenaGroundTruth[] target = [new("enemy1", new PointF(100, 100), true)];
+
+        recorder.Record(now, target, [new(7, new PointF(100, 100), false, 0, null)], 0, 0, 60);
+        recorder.Record(now.AddMilliseconds(16), target, [new(7, new PointF(230, 100), true, 16, null)], 0, 0, 60);
+        recorder.Record(now.AddMilliseconds(32), target, [new(7, new PointF(235, 100), true, 32, null)], 0, 0, 60);
+        recorder.Record(now.AddMilliseconds(48), target, [new(7, new PointF(100, 100), false, 0, null)], 0, 0, 60);
+        recorder.Record(now.AddMilliseconds(64), target, [], 0, 0, 60);
+
+        ScenarioMetricsSummary summary = recorder.Summarize();
+        Assert.Equal(2, summary.PositionGateMissFrames);
+        Assert.Equal(2, summary.SameTrackOutsideGateFrames);
+        Assert.Equal(2, summary.AssociationLossEvents);
+        Assert.Equal(1, summary.ConfirmedTrackExpiryEvents);
+        Assert.Equal(135, summary.MaximumPositionErrorPixels, 3);
+        Assert.Equal(2, summary.MaximumConsecutivePositionMissFrames);
+    }
+
     private static ScenarioMetricsSummary ClassifyOcclusionDetection(int trackId, double ageMs, bool extrapolated, double elapsedMs)
     {
         var recorder = new ScenarioMetricsRecorder("OcclusionClassification", matchRadiusPixels: 30);
