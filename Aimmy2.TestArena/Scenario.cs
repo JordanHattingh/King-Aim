@@ -170,12 +170,7 @@ namespace Aimmy2.TestArena
                     break;
 
                 case ScenarioKind.StopStart:
-                    // Moves for 1.5s, then holds still for 1.5s, repeating.
-                    double cyclePos = _elapsedSeconds % 3.0;
-                    if (cyclePos < 1.5)
-                    {
-                        Move(Targets[0], x: Oscillate(_width * 0.2, _width * 0.8, period: 3.0), y: null);
-                    }
+                    AdvanceStopStart(Targets[0]);
                     break;
 
                 case ScenarioKind.TemporaryOcclusion:
@@ -212,6 +207,30 @@ namespace Aimmy2.TestArena
                     AdvanceThreeEnemyConvergence();
                     break;
             }
+        }
+
+        private void AdvanceStopStart(ArenaTarget target)
+        {
+            // 4-phase continuous cycle — no position jump at cycle boundaries.
+            //   0.0–1.5 s: move right at constant speed
+            //   1.5–3.0 s: hold at right edge
+            //   3.0–4.5 s: move left at constant speed
+            //   4.5–6.0 s: hold at left edge
+            // Using Lerp (constant velocity) rather than Oscillate so the tracker
+            // sees a true velocity→zero transition, not a sinusoidal one.
+            double left = _width * 0.2;
+            double right = _width * 0.8;
+            double cycle = _elapsedSeconds % 6.0;
+            double x;
+            if (cycle < 1.5)
+                x = Lerp(left, right, cycle / 1.5);
+            else if (cycle < 3.0)
+                x = right;
+            else if (cycle < 4.5)
+                x = Lerp(right, left, (cycle - 3.0) / 1.5);
+            else
+                x = left;
+            Move(target, x: x, y: _height * 0.5);
         }
 
         private void AdvanceSuddenAcceleration(ArenaTarget target)

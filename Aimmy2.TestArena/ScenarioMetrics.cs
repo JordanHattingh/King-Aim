@@ -61,7 +61,16 @@ public sealed record ScenarioMetricsSummary(
     double InferenceP95Ms,
     double InferenceP99Ms,
     double FrameAgeP95Ms,
-    double CaptureFpsP50);
+    double CaptureFpsP50,
+    // Occlusion-specific metrics (non-zero only for scenarios with Visible=false phases).
+    // FalsePositives during expected occlusion are not counted here; they are bucketed below.
+    int    OcclusionFrames,
+    int    TrackPresentDuringOcclusionFrames,
+    int    GhostFramesAfterPersistenceWindow,
+    bool   TrackIdPreservedAfterOcclusion,
+    // Ambiguity-specific metrics (non-zero only for multi-target scenarios with convergence).
+    int    AmbiguousIdentityFrames,
+    int    IdentitySwitchesOutsideAmbiguity);
 
 public sealed class ScenarioMetricsRecorder
 {
@@ -87,6 +96,19 @@ public sealed class ScenarioMetricsRecorder
     private int _misses;
     private int _identitySwitches;
     private int _trackLosses;
+    // Occlusion tracking
+    private int _occlusionFrames;
+    private int _trackPresentDuringOcclusion;
+    private int _ghostFramesAfterWindow;
+    private bool _trackIdPreservedAfterOcclusion = true;
+    private int? _lastTrackIdBeforeOcclusion;
+    private bool _wasOccluded;
+    // Allowed persistence window (matches TrackManager.MaxLostSeconds default).
+    private const double OcclusionPersistenceWindowSeconds = 0.6;
+    private DateTime? _occlusionStartedAt;
+    // Ambiguity tracking
+    private int _ambiguousIdentityFrames;
+    private int _identitySwitchesOutsideAmbiguity;
 
     public ScenarioMetricsRecorder(
         string scenario,
@@ -103,6 +125,10 @@ public sealed class ScenarioMetricsRecorder
         _noiseConfig = noiseConfig;
         _matchRadiusPixels = matchRadiusPixels;
     }
+
+    /// <summary>Convenience overload for tests — uses GameplayReplay domain defaults.</summary>
+    public ScenarioMetricsRecorder(string scenario, double matchRadiusPixels = 120)
+        : this(scenario, ScenarioKind.GameplayReplay, matchRadiusPixels: matchRadiusPixels) { }
 
     public int Frames => _frames;
 
@@ -127,9 +153,44 @@ public sealed class ScenarioMetricsRecorder
         foreach (ArenaDetection detection in detections)
             AddFinite(_observationAges, detection.ObservationAgeMs);
 
-        ArenaGroundTruth[] visibleTargets = targets.Where(t => t.Visible).ToArray();
+        ArenaGroundTruth[] visibleTargets   = targets.Where(t => t.Visible).ToArray();
+        ArenaGroundTruth[] invisibleTargets = targets.Where(t => !t.Visible).ToArray();
 
-        // Global one-to-one assignment via the Hungarian algorithm.
+        // ── Occlusion bookkeeping ──────────────────────────────────────────────
+        // Track when the scenario deliberately hides a target (Visible=false) so we
+        // can distinguish a persisted/extrapolated track (correct) from a ghost track
+        // that outlives the allowed persistence window (failure).
+        bool anyInvisible = invisibleTargets.Length > 0;
+        if (anyInvisible)
+        {
+            _occlusionFrames++;
+            _occlusionStartedAt ??= timestamp;
+            _wasOccluded = true;
+        }
+        else if (_wasOccluded)
+        {
+            // Targets just became visible again — note track ID for preservation check.
+            _wasOccluded = false;
+            _occlusionStartedAt = null;
+        }
+
+        // ── Ambiguity detection ────────────────────────────────────────────────
+        // Two or more same-class targets within one box-width of each other are
+        // observably indistinguishable. Identity switches in such frames are not
+        // actionable failures — report them separately.
+        bool frameIsAmbiguous = false;
+        if (visibleTargets.Length >= 2)
+        {
+            const float BoxWidthPx = 60f;
+            for (int a = 0; a < visibleTargets.Length && !frameIsAmbiguous; a++)
+                for (int b = a + 1; b < visibleTargets.Length && !frameIsAmbiguous; b++)
+                    if (Distance(visibleTargets[a].Center, visibleTargets[b].Center) < BoxWidthPx)
+                        frameIsAmbiguous = true;
+        }
+        if (frameIsAmbiguous)
+            _ambiguousIdentityFrames++;
+
+        // ── Global one-to-one assignment via the Hungarian algorithm ──────────
         // Greedy target-by-target selection can pair Target A to the nearer of two
         // detections in a crossing scenario, forcing Target B onto the wrong track and
         // producing a spurious identity switch.  Global assignment minimises total
@@ -158,8 +219,18 @@ public sealed class ScenarioMetricsRecorder
             double bestDistance = Distance(target.Center, match.Center);
 
             if (_lastTrackByTarget.TryGetValue(target.Id, out int previousTrack) && previousTrack != match.TrackId)
+            {
                 _identitySwitches++;
+                if (!frameIsAmbiguous)
+                    _identitySwitchesOutsideAmbiguity++;
+
+                // If the ID changed on first reappearance after occlusion, preservation fails.
+                if (_lastTrackIdBeforeOcclusion.HasValue)
+                    _trackIdPreservedAfterOcclusion = false;
+            }
             _lastTrackByTarget[target.Id] = match.TrackId;
+            _lastTrackIdBeforeOcclusion = match.TrackId;
+
             if (_lostAtByTarget.Remove(target.Id, out DateTime lostAt))
                 _reacquisitionMs.Add(Math.Max(0, (timestamp - lostAt).TotalMilliseconds));
             if (match.IsExtrapolated)
@@ -167,7 +238,44 @@ public sealed class ScenarioMetricsRecorder
             if (match.GruPredictedCenter is PointF prediction)
                 _gruErrors.Add(Distance(target.Center, prediction));
         }
-        _falsePositives += detections.Count - matchedDetections.Count;
+
+        // ── False-positive classification ─────────────────────────────────────
+        // Detections not matched to any visible target are FP candidates.
+        // During expected occlusion: a detection whose centre overlaps where the
+        // invisible target was last seen is a persisted/extrapolated track — not a
+        // false positive in the evaluator sense.
+        int unmatched = detections.Count - matchedDetections.Count;
+        if (anyInvisible && unmatched > 0)
+        {
+            double occlusionAgeSeconds = _occlusionStartedAt.HasValue
+                ? (timestamp - _occlusionStartedAt.Value).TotalSeconds
+                : 0;
+
+            foreach (int di in Enumerable.Range(0, detections.Count).Where(i => !matchedDetections.Contains(i)))
+            {
+                // Is this detection near any invisible target's last known position?
+                bool isPersisted = invisibleTargets.Any(t =>
+                    Distance(detections[di].Center, t.Center) <= _matchRadiusPixels);
+
+                if (isPersisted && occlusionAgeSeconds <= OcclusionPersistenceWindowSeconds)
+                {
+                    _trackPresentDuringOcclusion++;
+                }
+                else if (isPersisted && occlusionAgeSeconds > OcclusionPersistenceWindowSeconds)
+                {
+                    _ghostFramesAfterWindow++;
+                    _falsePositives++;
+                }
+                else
+                {
+                    _falsePositives++;
+                }
+            }
+        }
+        else
+        {
+            _falsePositives += unmatched;
+        }
     }
 
     public ScenarioMetricsSummary Summarize() => new(
@@ -200,7 +308,13 @@ public sealed class ScenarioMetricsRecorder
         InferenceP95Ms:           Percentile(_inferenceMs, 0.95),
         InferenceP99Ms:           Percentile(_inferenceMs, 0.99),
         FrameAgeP95Ms:            Percentile(_frameAgeMs, 0.95),
-        CaptureFpsP50:            Percentile(_captureFps, 0.50));
+        CaptureFpsP50:            Percentile(_captureFps, 0.50),
+        OcclusionFrames:                    _occlusionFrames,
+        TrackPresentDuringOcclusionFrames:  _trackPresentDuringOcclusion,
+        GhostFramesAfterPersistenceWindow:  _ghostFramesAfterWindow,
+        TrackIdPreservedAfterOcclusion:     _trackIdPreservedAfterOcclusion,
+        AmbiguousIdentityFrames:            _ambiguousIdentityFrames,
+        IdentitySwitchesOutsideAmbiguity:   _identitySwitchesOutsideAmbiguity);
 
     /// <summary>
     /// Munkres (Hungarian) algorithm — O(n³) square-matrix variant.
@@ -251,6 +365,7 @@ public sealed class ScenarioMetricsRecorder
             double[] minVal = new double[sz + 1];
             bool[] used = new bool[sz + 1];
             Array.Fill(minVal, INF);
+            bool augmentingPathFound = false;
 
             do
             {
@@ -274,8 +389,8 @@ public sealed class ScenarioMetricsRecorder
                     }
                 }
 
-                // No reachable column found (all costs INF and all columns used).
-                // This can happen when all targets are beyond matchRadius of all detections.
+                // All unreached columns are at INF — no augmenting path exists for
+                // this row (every target→detection pair exceeds matchRadius).
                 if (j1 < 0) break;
 
                 for (int j = 0; j <= sz; j++)
@@ -284,8 +399,13 @@ public sealed class ScenarioMetricsRecorder
                     else minVal[j] -= delta;
                 }
                 j0 = j1;
+
+                if (p[j0] == 0) augmentingPathFound = true;
             }
-            while (j0 > 0 && p[j0] != 0);
+            while (p[j0] != 0);
+
+            // Only walk the augmenting path when we actually found a free column.
+            if (!augmentingPathFound) continue;
 
             do
             {
