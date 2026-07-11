@@ -27,6 +27,14 @@ namespace Aimmy2.TestArena
         private readonly UdpClient _pointingTelemetry = new();
         private readonly IPEndPoint _pointingTelemetryEndpoint = new(IPAddress.Loopback, 28761);
         private readonly string _pointingSessionId = $"testarena_{DateTime.UtcNow:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}";
+        private readonly string _reportDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "KingAim", "TestArenaReports");
+        private ScenarioMetricsRecorder? _metricsRecorder;
+        private readonly Queue<ScenarioKind> _reportQueue = new();
+        private DateTime? _reportScenarioEndsAt;
+        private bool _runningAllReports;
+        private static readonly TimeSpan AutomatedScenarioDuration = TimeSpan.FromSeconds(10);
 
         public MainWindow()
         {
@@ -92,6 +100,7 @@ namespace Aimmy2.TestArena
 
         private void RebuildScenario(ScenarioKind kind)
         {
+            FlushScenarioReport();
             foreach (var visual in _visuals.Values)
             {
                 ArenaCanvas.Children.Remove(visual.Rect);
@@ -102,6 +111,7 @@ namespace Aimmy2.TestArena
             double width = ArenaCanvas.ActualWidth > 0 ? ArenaCanvas.ActualWidth : 900;
             double height = ArenaCanvas.ActualHeight > 0 ? ArenaCanvas.ActualHeight : 700;
             _scenario = new Scenario(kind, width, height);
+            _metricsRecorder = new ScenarioMetricsRecorder(kind.ToString());
 
             foreach (var target in _scenario.Targets)
             {
@@ -170,7 +180,81 @@ namespace Aimmy2.TestArena
             }
 
             PublishPointingTelemetry();
+            RecordScenarioMetrics(now);
+            AdvanceAutomatedReports(now);
             UpdateDiagnostics();
+        }
+
+        private void RunAllReports_Click(object sender, RoutedEventArgs e)
+        {
+            if (_aiManager == null)
+            {
+                ReportStatusLabel.Text = "Enable the full pipeline first.";
+                return;
+            }
+
+            _reportQueue.Clear();
+            foreach (ScenarioKind kind in Enum.GetValues<ScenarioKind>())
+                _reportQueue.Enqueue(kind);
+            _runningAllReports = true;
+            RunNextAutomatedScenario();
+        }
+
+        private void AdvanceAutomatedReports(DateTime now)
+        {
+            if (_runningAllReports && _reportScenarioEndsAt is DateTime endsAt && now >= endsAt)
+            {
+                FlushScenarioReport();
+                RunNextAutomatedScenario();
+            }
+        }
+
+        private void RunNextAutomatedScenario()
+        {
+            if (!_reportQueue.TryDequeue(out ScenarioKind kind))
+            {
+                _runningAllReports = false;
+                _reportScenarioEndsAt = null;
+                ReportStatusLabel.Text = $"Complete: {_reportDirectory}";
+                return;
+            }
+
+            if (!Equals(ScenarioComboBox.SelectedItem, kind))
+                ScenarioComboBox.SelectedItem = kind;
+            else
+                RebuildScenario(kind);
+            _reportScenarioEndsAt = DateTime.UtcNow + AutomatedScenarioDuration;
+            ReportStatusLabel.Text = $"Recording {kind} ({_reportQueue.Count + 1} remaining)";
+        }
+
+        private void RecordScenarioMetrics(DateTime timestamp)
+        {
+            if (_aiManager == null || _metricsRecorder == null || ArenaCanvas.ActualWidth <= 0)
+                return;
+
+            ArenaGroundTruth[] targets = _scenario.Targets.Select(target =>
+            {
+                Point screen = ArenaCanvas.PointToScreen(target.Position);
+                return new ArenaGroundTruth(target.Id, new System.Drawing.PointF((float)screen.X, (float)screen.Y), target.Visible);
+            }).ToArray();
+            ArenaDetection[] detections = _aiManager.CurrentObservations.Select(observation => new ArenaDetection(
+                observation.TrackId,
+                new System.Drawing.PointF(observation.Center.X, observation.Center.Y),
+                observation.BoundingBoxIsExtrapolated,
+                observation.ObservationAge.TotalMilliseconds,
+                observation.GruPredictedCenterFraction is { } predicted
+                    ? new System.Drawing.PointF(
+                        (float)(SystemParameters.VirtualScreenLeft + predicted.X * SystemParameters.VirtualScreenWidth),
+                        (float)(SystemParameters.VirtualScreenTop + predicted.Y * SystemParameters.VirtualScreenHeight))
+                    : null)).ToArray();
+            _metricsRecorder.Record(timestamp, targets, detections, _aiManager.InferenceMs, _aiManager.FrameAge, _aiManager.CaptureFps);
+        }
+
+        private void FlushScenarioReport()
+        {
+            if (_metricsRecorder is { Frames: > 0 } recorder)
+                ScenarioReportWriter.Write(_reportDirectory, recorder.Summarize());
+            _metricsRecorder = null;
         }
 
 
@@ -307,11 +391,13 @@ namespace Aimmy2.TestArena
                 $"RX: {_aiManager.RX:F2}\n" +
                 $"RY: {_aiManager.RY:F2}\n" +
                 $"Gamepad Connected: {_aiManager.GamepadConnected}";
+            DiagnosticsText.Text += $"\nReports: {_reportDirectory}";
         }
 
         private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)
         {
             _renderTimer.Stop();
+            FlushScenarioReport();
             _pointingTelemetry.Dispose();
             StopPipeline();
         }

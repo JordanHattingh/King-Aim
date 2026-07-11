@@ -22,6 +22,9 @@ def main() -> int:
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--source-type", choices=("self_captured", "permissioned"), default="self_captured")
     parser.add_argument("--license", default="self-captured")
+    parser.add_argument("--creator")
+    parser.add_argument("--permission-evidence")
+    parser.add_argument("--attribution-text")
     args = parser.parse_args()
     if not args.input.is_dir() or args.interval <= 0:
         parser.error("--input must exist and --interval must be positive")
@@ -58,8 +61,8 @@ def main() -> int:
                 digest = hashlib.sha256(destination.read_bytes()).hexdigest()
                 append_record(args.manifest, ProvenanceRecord(
                     image_id=digest[:24], local_filename=str(destination.resolve()), source_type=args.source_type,
-                    source_url=None, source_page=None, creator=None, license=args.license, license_url=None,
-                    permission_evidence=None, attribution_text=None, imported_at_utc=imported_now(), sha256=digest,
+                    source_url=None, source_page=None, creator=args.creator, license=args.license, license_url=None,
+                    permission_evidence=args.permission_evidence, attribution_text=args.attribution_text, imported_at_utc=imported_now(), sha256=digest,
                     perceptual_hash=None, width=width, height=height, game_category=None, session_id=session,
                     accepted=True, rejection_reason=None, dataset_split=None,
                 ))

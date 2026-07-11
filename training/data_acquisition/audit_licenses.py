@@ -9,7 +9,7 @@ from pathlib import Path
 
 from provenance import load_records
 
-DEFAULT_ALLOWLIST = {"CC0", "Public Domain", "CC BY 3.0", "CC BY 4.0", "CC BY-SA 4.0", "explicit written permission", "self-captured"}
+DEFAULT_ALLOWLIST = {"CC0", "Public Domain", "CC BY 2.0", "CC BY 3.0", "CC BY 4.0", "CC BY-SA 4.0", "explicit written permission", "self-captured"}
 
 
 def main() -> int:

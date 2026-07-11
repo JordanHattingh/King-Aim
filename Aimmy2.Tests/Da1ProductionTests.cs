@@ -156,8 +156,14 @@ namespace Aimmy2.Tests
             Assert.Equal(2, observations.Count);
             Assert.Equal(SemanticRole.Enemy, observations[0].Role);
             Assert.Equal(SemanticRole.Friendly, observations[1].Role);
+            Assert.Equal(TimeSpan.Zero, observations[0].ObservationAge);
             Assert.NotNull(primary);
             Assert.Equal(SemanticRole.Enemy, primary!.Role);
+
+            _ = manager.Update([], roles, now.AddMilliseconds(100));
+            AccessibilityObservation occluded = observer.Observe(now.AddMilliseconds(100))[0];
+            Assert.True(occluded.IsOccluded);
+            Assert.Equal(TimeSpan.FromMilliseconds(100), occluded.ObservationAge);
         }
 
         [Fact]

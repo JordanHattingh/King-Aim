@@ -13,6 +13,7 @@ namespace Aimmy2.AILogic
         PlayerKeypoints? Keypoints,
         bool IsOccluded,
         bool BoundingBoxIsExtrapolated,
+        TimeSpan ObservationAge,
         TimeSpan TrackAge);
 
     /// <summary>
@@ -84,6 +85,7 @@ namespace Aimmy2.AILogic
                 track.Keypoints,
                 track.FramesSinceLastSeen > 0,
                 track.BoundingBoxIsExtrapolated,
+                TimeSpan.FromSeconds(Math.Max(0, (observedAt - track.LastSeen).TotalSeconds)),
                 TimeSpan.FromSeconds(Math.Max(0, (observedAt - track.FirstSeen).TotalSeconds)));
         }
 

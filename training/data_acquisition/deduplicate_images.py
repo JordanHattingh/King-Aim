@@ -14,7 +14,9 @@ def average_hash(path: Path, size: int = 16) -> int:
     from PIL import Image
 
     with Image.open(path) as image:
-        pixels = list(image.convert("L").resize((size, size)).getdata())
+        grayscale = image.convert("L").resize((size, size))
+        flattened = getattr(grayscale, "get_flattened_data", None)
+        pixels = list(flattened() if flattened else grayscale.getdata())
     mean = sum(pixels) / len(pixels)
     return sum((1 << index) for index, value in enumerate(pixels) if value >= mean)
 

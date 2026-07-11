@@ -5,3 +5,5 @@ Source gates are Release build with zero warnings and errors, all .NET tests, al
 Model selection compares YOLOv8 epoch 50, YOLOv8 best, YOLO11n-Pose best, and YOLO11s-Pose best on locked images. Measure accuracy and P50/P95/P99 latency. Pose exports additionally require raw PyTorch versus ONNX parity and DirectML/C# decoder verification on the target Windows GPU.
 
 No GRU, calibration, or movement model becomes production-critical until it beats its simpler baseline on unseen grouped sessions.
+
+TestArena's **Run all reports** command records every scenario for ten seconds with the live pipeline. JSON and CSV reports are written under `%LOCALAPPDATA%\KingAim\TestArenaReports`. The report contract includes detections, false positives, misses, identity switches, track losses, reacquisition, extrapolated-box error, GRU error, observation age, inference percentiles, frame age, and capture FPS.
