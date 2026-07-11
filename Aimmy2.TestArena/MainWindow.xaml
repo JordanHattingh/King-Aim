@@ -16,10 +16,10 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
-        <StackPanel Orientation="Horizontal"
-                    Grid.Row="0"
-                    Background="#FF2D2D30"
-                    Margin="0,0,0,4">
+        <WrapPanel Orientation="Horizontal"
+                   Grid.Row="0"
+                   Background="#FF2D2D30"
+                   Margin="0,0,0,4">
             <TextBlock Text="Scenario:"
                        Foreground="White"
                        VerticalAlignment="Center"
@@ -46,11 +46,23 @@
                 </ComboBox.Resources>
             </ComboBox>
 
+            <TextBlock Text="Profile:"
+                       Foreground="White"
+                       VerticalAlignment="Center"
+                       Margin="14,6,8,6" />
+            <ComboBox x:Name="NoiseProfileComboBox"
+                      Width="150"
+                      Margin="0,6"
+                      Background="#FF3F3F46"
+                      Foreground="Black"
+                      BorderBrush="#FF5A5A5F"
+                      SelectionChanged="NoiseProfileComboBox_SelectionChanged" />
+
             <CheckBox x:Name="ModelPipelineCheckBox"
                       Content="Run full pipeline (capture -> inference -> tracking -> gamepad)"
                       Foreground="White"
                       VerticalAlignment="Center"
-                      Margin="20,0,0,0"
+                      Margin="14,0,0,0"
                       Checked="ModelPipelineCheckBox_Changed"
                       Unchecked="ModelPipelineCheckBox_Changed" />
 
@@ -66,12 +78,42 @@
                     Padding="10,3"
                     Click="RunAllReports_Click" />
 
+            <ComboBox x:Name="SweepBlendComboBox"
+                      Margin="14,5,0,5"
+                      Padding="6,2"
+                      VerticalAlignment="Center"
+                      ToolTip="Blend value for RawVelocityAnchor sweep" />
+
+            <Button x:Name="RunSweepButton"
+                    Content="Run sweep"
+                    Margin="6,5,0,5"
+                    Padding="10,3"
+                    Click="RunSweep_Click" />
+
+            <Button x:Name="RunConfirmationGateButton"
+                    Content="Confirm b0.90"
+                    Margin="6,5,0,5"
+                    Padding="10,3"
+                    Click="RunConfirmationGate_Click" />
+
+            <Button x:Name="RunFullMatrixCleanButton"
+                    Content="Full matrix Clean"
+                    Margin="14,5,0,5"
+                    Padding="10,3"
+                    Click="RunFullMatrixClean_Click" />
+
+            <Button x:Name="RunFullMatrixNoisyButton"
+                    Content="Full matrix Noisy"
+                    Margin="6,5,0,5"
+                    Padding="10,3"
+                    Click="RunFullMatrixNoisy_Click" />
+
             <TextBlock x:Name="ReportStatusLabel"
                        Text=""
                        Foreground="LightSkyBlue"
                        VerticalAlignment="Center"
                        Margin="10,0,0,0" />
-        </StackPanel>
+        </WrapPanel>
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>

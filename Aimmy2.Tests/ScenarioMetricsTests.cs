@@ -8,6 +8,54 @@ namespace Aimmy2.Tests;
 
 public sealed class ScenarioMetricsTests
 {
+    [Fact]
+    public void FixedSimulationClock_UsesExactRationalFrameTimeAndResets()
+    {
+        var clock = new FixedSimulationClock();
+        Assert.Equal(FixedSimulationClock.EpochUtc, clock.CurrentTimestamp);
+        Assert.True(clock.Advance() > FixedSimulationClock.EpochUtc);
+        while (clock.FrameIndex < 60) clock.Advance();
+        Assert.Equal(FixedSimulationClock.EpochUtc.AddSeconds(1), clock.CurrentTimestamp);
+        while (clock.FrameIndex < 600) clock.Advance();
+        Assert.Equal(FixedSimulationClock.EpochUtc.AddSeconds(10), clock.CurrentTimestamp);
+        clock.Reset();
+        Assert.Equal(0, clock.FrameIndex);
+        Assert.Equal(FixedSimulationClock.EpochUtc, clock.CurrentTimestamp);
+    }
+
+    [Fact]
+    public void SyntheticProfiles_MapToNamedDeterministicConfigurations()
+    {
+        foreach (SyntheticProfile profile in Enum.GetValues<SyntheticProfile>())
+        {
+            SyntheticNoiseConfig config = profile.Configuration();
+            Assert.Equal(profile.ToString(), config.ProfileName);
+            Assert.Equal(42, config.Seed);
+        }
+    }
+
+    [Fact]
+    public void ContinuityMetrics_DistinguishOutsideGateFromConfirmedExpiry()
+    {
+        var recorder = new ScenarioMetricsRecorder("Continuity", matchRadiusPixels: 120);
+        DateTime now = DateTime.UtcNow;
+        ArenaGroundTruth[] target = [new("enemy1", new PointF(100, 100), true)];
+
+        recorder.Record(now, target, [new(7, new PointF(100, 100), false, 0, null)], 0, 0, 60);
+        recorder.Record(now.AddMilliseconds(16), target, [new(7, new PointF(230, 100), true, 16, null)], 0, 0, 60);
+        recorder.Record(now.AddMilliseconds(32), target, [new(7, new PointF(235, 100), true, 32, null)], 0, 0, 60);
+        recorder.Record(now.AddMilliseconds(48), target, [new(7, new PointF(100, 100), false, 0, null)], 0, 0, 60);
+        recorder.Record(now.AddMilliseconds(64), target, [], 0, 0, 60);
+
+        ScenarioMetricsSummary summary = recorder.Summarize();
+        Assert.Equal(2, summary.PositionGateMissFrames);
+        Assert.Equal(2, summary.SameTrackOutsideGateFrames);
+        Assert.Equal(2, summary.AssociationLossEvents);
+        Assert.Equal(1, summary.ConfirmedTrackExpiryEvents);
+        Assert.Equal(135, summary.MaximumPositionErrorPixels, 3);
+        Assert.Equal(2, summary.MaximumConsecutivePositionMissFrames);
+    }
+
     private static ScenarioMetricsSummary ClassifyOcclusionDetection(int trackId, double ageMs, bool extrapolated, double elapsedMs)
     {
         var recorder = new ScenarioMetricsRecorder("OcclusionClassification", matchRadiusPixels: 30);
@@ -281,7 +329,7 @@ public sealed class ScenarioMetricsTests
     }
 
     [Fact]
-    public void ReportWriter_CreatesJsonAndCsv()
+    public void ReportWriter_CreatesJsonAndCsvAndHash()
     {
         string directory = Path.Combine(Path.GetTempPath(), $"kingaim-arena-{Guid.NewGuid():N}");
         try
@@ -292,11 +340,119 @@ public sealed class ScenarioMetricsTests
 
             Assert.Single(Directory.GetFiles(directory, "*.json"));
             Assert.Single(Directory.GetFiles(directory, "*.csv"));
+            Assert.Single(Directory.GetFiles(directory, "*.hash"));
         }
         finally
         {
             if (Directory.Exists(directory))
                 Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Fact]
+    public void ReportWriter_WithRunId_UsesRunIdAsFilename()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"kingaim-arena-{Guid.NewGuid():N}");
+        try
+        {
+            var recorder = new ScenarioMetricsRecorder("DirectionReversal", ScenarioKind.DirectionReversal,
+                noiseConfig: SyntheticProfile.Noisy.Configuration())
+            {
+                RunId = "DirectionReversal_Noisy_R01_seed42_abc1234",
+                Repetition = 1,
+                GitCommit = "abc1234",
+            };
+            recorder.Record(FixedSimulationClock.EpochUtc, [], [], 0, 0, 0);
+            ScenarioReportWriter.Write(directory, recorder.Summarize());
+
+            Assert.Single(Directory.GetFiles(directory, "DirectionReversal_Noisy_R01_seed42_abc1234.json"));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    // ── Canonical hash / reproducibility tests ───────────────────────────────
+
+    private static ScenarioMetricsSummary RunDeterministicSequence(int repetitionOffset = 0)
+    {
+        // Pure evaluator-level reproducibility: same fixed clock, same injected detections.
+        // Does not drive TrackManager — tests that ScenarioMetricsRecorder is deterministic
+        // when given identical input regardless of wall-clock time.
+        _ = repetitionOffset; // all repetitions use the same inputs by design
+        var recorder = new ScenarioMetricsRecorder("DirectionReversal", ScenarioKind.DirectionReversal,
+            noiseConfig: SyntheticProfile.Noisy.Configuration())
+        {
+            RunId = $"DirectionReversal_Noisy_R0{repetitionOffset + 1}_seed42_test",
+            Repetition = repetitionOffset + 1,
+            GitCommit = "test",
+        };
+        var clock = new FixedSimulationClock();
+        for (int i = 0; i < 600; i++)
+        {
+            DateTime ts = clock.Advance();
+            bool occluded = i is >= 120 and < 240;
+            var targets = new[] { new ArenaGroundTruth("enemy1", new System.Drawing.PointF(100 + i * 0.5f, 300), !occluded) };
+            ArenaDetection[] detections = occluded
+                ? []
+                : [new ArenaDetection(1, new System.Drawing.PointF(100 + i * 0.5f, 300), false, i * (1000.0 / 60), null)];
+            recorder.Record(ts, targets, detections, 0, 0, 0);
+        }
+        return recorder.Summarize();
+    }
+
+    [Fact]
+    public void CanonicalHash_SameInputTwice_ProducesIdenticalHash()
+    {
+        string hash1 = ScenarioReportWriter.CanonicalHash(RunDeterministicSequence(0));
+        string hash2 = ScenarioReportWriter.CanonicalHash(RunDeterministicSequence(0));
+        Assert.Equal(hash1, hash2);
+    }
+
+    [Fact]
+    public void CanonicalHash_FiveRepetitions_AllHashesMatch()
+    {
+        string[] hashes = Enumerable.Range(0, 5)
+            .Select(i => ScenarioReportWriter.CanonicalHash(RunDeterministicSequence(i)))
+            .ToArray();
+
+        string first = hashes[0];
+        foreach (string h in hashes)
+            Assert.Equal(first, h);
+    }
+
+    [Fact]
+    public void CanonicalHash_ExcludesRealElapsedMsAndRunId()
+    {
+        // Two summaries that differ only in wall-clock metadata must hash identically.
+        // We can't control RealElapsedMs directly from outside, but two runs of the same
+        // deterministic sequence at slightly different wall times will differ in RealElapsedMs
+        // while producing the same canonical hash.
+        ScenarioMetricsSummary s1 = RunDeterministicSequence(0);
+        ScenarioMetricsSummary s2 = RunDeterministicSequence(1); // different RunId/Repetition
+
+        // The canonical fields are identical regardless of RunId/Repetition/RealElapsedMs.
+        Assert.Equal(ScenarioReportWriter.CanonicalHash(s1), ScenarioReportWriter.CanonicalHash(s2));
+        // But the summaries themselves differ in RunId.
+        Assert.NotEqual(s1.RunId, s2.RunId);
+    }
+
+    [Fact]
+    public void CanonicalHash_DifferentDetectionCount_ProducesDifferentHash()
+    {
+        var r1 = new ScenarioMetricsRecorder("DirectionReversal", ScenarioKind.DirectionReversal,
+            noiseConfig: SyntheticProfile.Noisy.Configuration());
+        var r2 = new ScenarioMetricsRecorder("DirectionReversal", ScenarioKind.DirectionReversal,
+            noiseConfig: SyntheticProfile.Noisy.Configuration());
+        DateTime ts = FixedSimulationClock.EpochUtc;
+        var target = new[] { new ArenaGroundTruth("e1", new System.Drawing.PointF(100, 100), true) };
+        r1.Record(ts, target, [new ArenaDetection(1, new System.Drawing.PointF(100, 100), false, 0, null)], 0, 0, 0);
+        r2.Record(ts, target, [], 0, 0, 0); // miss — different metrics
+
+        Assert.NotEqual(
+            ScenarioReportWriter.CanonicalHash(r1.Summarize()),
+            ScenarioReportWriter.CanonicalHash(r2.Summarize()));
     }
 }

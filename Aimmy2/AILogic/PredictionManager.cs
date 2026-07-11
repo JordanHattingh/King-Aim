@@ -23,7 +23,10 @@ namespace AILogic
         private const double MaxVelocity = 5000.0;
 
         private DateTime _lastUpdateTime;
+        private DateTime _lastVelocitySampleTime;
+        private double _lastVelocitySampleX, _lastVelocitySampleY;
         private bool _initialized = false;
+        private const double MinimumVelocitySampleSeconds = 1.0 / 120.0;
 
         public void UpdateKalmanFilter(Detection detection)
         {
@@ -36,6 +39,9 @@ namespace AILogic
                 _vx = 0;
                 _vy = 0;
                 _lastUpdateTime = now;
+                _lastVelocitySampleTime = now;
+                _lastVelocitySampleX = detection.X;
+                _lastVelocitySampleY = detection.Y;
                 _initialized = true;
                 return;
             }
@@ -65,9 +71,21 @@ namespace AILogic
             _x = predictedX + K * innovationX;
             _y = predictedY + K * innovationY;
 
-            // Update velocity based on innovation
-            _vx += K * innovationX / dt;
-            _vy += K * innovationY / dt;
+            double velocityDt = (now - _lastVelocitySampleTime).TotalSeconds;
+            if (double.IsFinite(velocityDt) && velocityDt >= MinimumVelocitySampleSeconds)
+            {
+                double stableDt = Math.Min(velocityDt, 0.1);
+                double measuredVx = (detection.X - _lastVelocitySampleX) / stableDt;
+                double measuredVy = (detection.Y - _lastVelocitySampleY) / stableDt;
+                if (double.IsFinite(measuredVx) && double.IsFinite(measuredVy))
+                {
+                    _vx += K * (measuredVx - _vx);
+                    _vy += K * (measuredVy - _vy);
+                }
+                _lastVelocitySampleX = detection.X;
+                _lastVelocitySampleY = detection.Y;
+                _lastVelocitySampleTime = now;
+            }
 
             // Clamp velocity to reasonable values
             _vx = Math.Clamp(_vx, -MaxVelocity, MaxVelocity);
@@ -126,6 +144,8 @@ namespace AILogic
             _x = _y = _vx = _vy = 0;
             _p00 = _p11 = _p22 = _p33 = 1.0;
             _lastUpdateTime = default;
+            _lastVelocitySampleTime = default;
+            _lastVelocitySampleX = _lastVelocitySampleY = 0;
             _initialized = false;
         }
     }

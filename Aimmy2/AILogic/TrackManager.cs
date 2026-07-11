@@ -37,6 +37,9 @@ namespace Aimmy2.AILogic
         internal TrackRingBuffer RingBuffer { get; } = new();
         internal int KeypointFrameAge { get; set; }
         internal RectangleF LastObservedBoundingBox { get; set; }
+        internal PointF LastVelocitySampleCenter { get; set; }
+        internal DateTime LastVelocitySampleTimestamp { get; set; }
+        internal bool HasVelocitySample { get; set; }
 
         public PlayerKeypoints? Keypoints { get; internal set; }
         public (float X, float Y)? GruPredictedCenter { get; internal set; }
@@ -68,6 +71,12 @@ namespace Aimmy2.AILogic
 
         /// <summary>First-order velocity filter response rate in 1/seconds.</summary>
         public float VelocityResponseRatePerSecond { get; set; } = 12f;
+        public double MinimumVelocitySampleSeconds { get; set; } = 1.0 / 120.0;
+        public float RawVelocityMeasurementWeight { get; set; } = 0.9f;
+        public long VelocityUpdatesAccepted { get; private set; }
+        public long VelocityUpdatesSkippedSubFrame { get; private set; }
+        public double MinimumObservedUpdateIntervalMs { get; private set; } = double.PositiveInfinity;
+        public float MaximumAcceptedVelocityMagnitude { get; private set; }
 
         public ITrackAssociationStrategy AssociationStrategy { get; set; } = new GlobalCostTrackAssociation();
         public TrackAssociationSettings AssociationSettings { get; } = new();
@@ -162,6 +171,9 @@ namespace Aimmy2.AILogic
                     Keypoints = detection.Keypoints,
                     KeypointFrameAge = detection.Keypoints == null ? Math.Max(0, KeypointCarryForwardFrames) : 0,
                     BoundingBoxIsExtrapolated = false,
+                    LastVelocitySampleCenter = center,
+                    LastVelocitySampleTimestamp = frameTime,
+                    HasVelocitySample = true,
                 };
 
                 newTrack.Kalman.UpdateKalmanFilter(new KalmanPrediction.Detection
@@ -188,7 +200,6 @@ namespace Aimmy2.AILogic
         {
             RectangleF detectionBox = GetScreenRectangle(detection);
             PointF newCenter = TrackCenter(detectionBox);
-            PointF oldCenter = TrackCenter(track.BoundingBox);
             float dt = Math.Clamp((float)(frameTime - track.LastSeen).TotalSeconds, 0f, 0.1f);
 
             track.Kalman.UpdateKalmanFilter(new KalmanPrediction.Detection
@@ -203,18 +214,56 @@ namespace Aimmy2.AILogic
                 timestamp: frameTime,
                 applyLead: false);
             PointF smoothedCenter = new(smoothedDetection.X, smoothedDetection.Y);
+            float rawWeight = Math.Clamp(RawVelocityMeasurementWeight, 0f, 1f);
+            PointF velocitySampleCenter = new(
+                smoothedCenter.X + (newCenter.X - smoothedCenter.X) * rawWeight,
+                smoothedCenter.Y + (newCenter.Y - smoothedCenter.Y) * rawWeight);
 
-            if (dt > 1e-5f)
+            double velocityDt = track.HasVelocitySample
+                ? (frameTime - track.LastVelocitySampleTimestamp).TotalSeconds
+                : 0.0;
+
+            if (track.HasVelocitySample && velocityDt >= 0.0)
+                MinimumObservedUpdateIntervalMs = Math.Min(MinimumObservedUpdateIntervalMs, velocityDt * 1000.0);
+
+            if (!track.HasVelocitySample)
             {
+                track.LastVelocitySampleCenter = velocitySampleCenter;
+                track.LastVelocitySampleTimestamp = frameTime;
+                track.HasVelocitySample = true;
+            }
+            else if (double.IsFinite(velocityDt) && velocityDt >= MinimumVelocitySampleSeconds)
+            {
+                float stableDt = (float)Math.Min(velocityDt, 0.1);
                 float sw = Math.Max(ScreenWidth, 1);
                 float sh = Math.Max(ScreenHeight, 1);
-                float measuredVx = ((smoothedCenter.X - oldCenter.X) / sw) / dt;
-                float measuredVy = ((smoothedCenter.Y - oldCenter.Y) / sh) / dt;
-                float alpha = 1f - MathF.Exp(-Math.Max(VelocityResponseRatePerSecond, 0f) * dt);
+                float measuredVx = ((velocitySampleCenter.X - track.LastVelocitySampleCenter.X) / sw) / stableDt;
+                float measuredVy = ((velocitySampleCenter.Y - track.LastVelocitySampleCenter.Y) / sh) / stableDt;
+
+                if (!float.IsFinite(measuredVx) || !float.IsFinite(measuredVy))
+                {
+                    measuredVx = track.Velocity.X;
+                    measuredVy = track.Velocity.Y;
+                }
+
+                float alpha = 1f - MathF.Exp(-Math.Max(VelocityResponseRatePerSecond, 0f) * stableDt);
 
                 track.Velocity = new PointF(
                     track.Velocity.X + (measuredVx - track.Velocity.X) * alpha,
                     track.Velocity.Y + (measuredVy - track.Velocity.Y) * alpha);
+
+                if (!float.IsFinite(track.Velocity.X) || !float.IsFinite(track.Velocity.Y))
+                    track.Velocity = PointF.Empty;
+
+                track.LastVelocitySampleCenter = velocitySampleCenter;
+                track.LastVelocitySampleTimestamp = frameTime;
+                VelocityUpdatesAccepted++;
+                MaximumAcceptedVelocityMagnitude = Math.Max(MaximumAcceptedVelocityMagnitude,
+                    MathF.Sqrt(track.Velocity.X * track.Velocity.X + track.Velocity.Y * track.Velocity.Y));
+            }
+            else
+            {
+                VelocityUpdatesSkippedSubFrame++;
             }
 
             float halfW = detectionBox.Width / 2f;

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -14,6 +15,12 @@ using Rectangle = System.Windows.Shapes.Rectangle;
 
 namespace Aimmy2.TestArena
 {
+    public sealed record AutomatedReportRun(
+        ScenarioKind Scenario,
+        SyntheticProfile Profile,
+        int Repetition,
+        string RunId);
+
     public partial class MainWindow : Window
     {
         private readonly DispatcherTimer _renderTimer;
@@ -33,10 +40,18 @@ namespace Aimmy2.TestArena
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "KingAim", "TestArenaReports");
         private ScenarioMetricsRecorder? _metricsRecorder;
-        private readonly Queue<ScenarioKind> _reportQueue = new();
-        private DateTime? _reportScenarioEndsAt;
+        private readonly Queue<AutomatedReportRun> _reportQueue = new();
+        private AutomatedReportRun? _currentAutomatedRun;
         private bool _runningAllReports;
-        private static readonly TimeSpan AutomatedScenarioDuration = TimeSpan.FromSeconds(10);
+        private readonly FixedSimulationClock _simulationClock = new();
+        private static readonly string s_gitCommit = GetGitCommitShort();
+        private const int ScenarioDurationSeconds = 10;
+        private const int ScenarioDurationFrames = ScenarioDurationSeconds * FixedSimulationClock.FrequencyHz;
+
+        // Sweep experiment state — populated only during a blend sweep; empty during baseline gate.
+        private float _sweepBlend = 0f;
+        private string _sweepPredictorMode = string.Empty;
+        private string _sweepDiffHash = string.Empty;
 
         public MainWindow()
         {
@@ -52,6 +67,12 @@ namespace Aimmy2.TestArena
                 ScenarioComboBox.Items.Add(kind);
             }
             ScenarioComboBox.SelectedIndex = 0;
+            foreach (SyntheticProfile profile in Enum.GetValues<SyntheticProfile>())
+                NoiseProfileComboBox.Items.Add(profile);
+            NoiseProfileComboBox.SelectedItem = SyntheticProfile.Clean;
+            foreach (float blend in new[] { 0.50f, 0.75f, 0.90f })
+                SweepBlendComboBox.Items.Add(blend);
+            SweepBlendComboBox.SelectedIndex = 0;
 
             _scenario = new Scenario(ScenarioKind.StaticEnemy, 900, 700);
             _lastTick = DateTime.UtcNow;
@@ -73,6 +94,12 @@ namespace Aimmy2.TestArena
             {
                 RebuildScenario(kind);
             }
+        }
+
+        private void NoiseProfileComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (IsLoaded && ScenarioComboBox.SelectedItem is ScenarioKind kind)
+                RebuildScenario(kind);
         }
 
         private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -103,6 +130,7 @@ namespace Aimmy2.TestArena
         private void RebuildScenario(ScenarioKind kind)
         {
             FlushScenarioReport();
+            _simulationClock.Reset();
             foreach (var visual in _visuals.Values)
             {
                 ArenaCanvas.Children.Remove(visual.Rect);
@@ -112,7 +140,7 @@ namespace Aimmy2.TestArena
 
             _syntheticSource?.Dispose();
             SyntheticNoiseConfig? noiseConfig = kind.Domain() == BenchmarkDomain.SyntheticTracking
-                ? SyntheticNoiseConfig.Clean
+                ? (NoiseProfileComboBox.SelectedItem as SyntheticProfile? ?? SyntheticProfile.Clean).Configuration()
                 : null;
             _syntheticSource = noiseConfig != null ? new SyntheticObservationSource(noiseConfig) : null;
 
@@ -129,12 +157,33 @@ namespace Aimmy2.TestArena
             _scenario = new Scenario(kind, width, height);
 
             bool detectorExecuted = kind.Domain() == BenchmarkDomain.GameplayReplay && _aiManager != null;
+
+            // Build the full RunId now that the noise config (and thus seed) is known.
+            string runId = string.Empty;
+            int repetition = 0;
+            if (_currentAutomatedRun != null)
+            {
+                int seed = noiseConfig?.Seed ?? 0;
+                runId = $"{_currentAutomatedRun.RunId}_seed{seed}_{s_gitCommit}";
+                repetition = _currentAutomatedRun.Repetition;
+            }
+
+            // Apply sweep blend to tracker if a sweep is active.
+            if (_syntheticSource != null && _sweepBlend > 0f)
+                _syntheticSource.RawVelocityMeasurementWeight = _sweepBlend;
+
             _metricsRecorder = new ScenarioMetricsRecorder(
                 kind.ToString(), kind,
                 detectorExecuted: detectorExecuted,
                 noiseConfig: noiseConfig)
             {
-                SwitchTracePath = Path.Combine(_reportDirectory, "switch_traces"),
+                SwitchTracePath          = Path.Combine(_reportDirectory, "switch_traces"),
+                RunId                    = runId,
+                Repetition               = repetition,
+                GitCommit                = s_gitCommit,
+                PredictorMode            = _sweepPredictorMode,
+                AssociationPredictionBlend = _sweepBlend,
+                WorkingTreeDiffHash      = _sweepDiffHash,
             };
 
             foreach (var target in _scenario.Targets)
@@ -180,18 +229,21 @@ namespace Aimmy2.TestArena
 
         private void RenderTimer_Tick(object? sender, EventArgs e)
         {
-            var now = DateTime.UtcNow;
-            double dt = Math.Clamp((now - _lastTick).TotalSeconds, 0, 0.1);
-            _lastTick = now;
-            _lastRenderDtSeconds = dt > 0 ? dt : _lastRenderDtSeconds;
+            DateTime renderNow = DateTime.UtcNow;
+            double renderDt = Math.Clamp((renderNow - _lastTick).TotalSeconds, 0, 0.1);
+            _lastTick = renderNow;
+            _lastRenderDtSeconds = renderDt > 0 ? renderDt : _lastRenderDtSeconds;
 
-            _scenario.Advance(dt);
+            bool fixedStep = _scenario.Kind.Domain() == BenchmarkDomain.SyntheticTracking;
+            DateTime frameTimestamp = fixedStep ? _simulationClock.Advance() : renderNow;
+            double simulationDt = fixedStep ? _simulationClock.DeltaSeconds : renderDt;
+            _scenario.Advance(simulationDt);
 
             if (_syntheticSource != null && ArenaCanvas.ActualWidth > 0)
             {
                 _syntheticSource.Inject(
                     _scenario.Targets,
-                    now,
+                    frameTimestamp,
                     p => { var s = ArenaCanvas.PointToScreen(p); return new System.Drawing.PointF((float)s.X, (float)s.Y); },
                     DisplayManager.ScreenLeft,
                     DisplayManager.ScreenTop,
@@ -217,29 +269,176 @@ namespace Aimmy2.TestArena
             }
 
             PublishPointingTelemetry();
-            RecordScenarioMetrics(now);
-            AdvanceAutomatedReports(now);
+            RecordScenarioMetrics(frameTimestamp);
+            AdvanceAutomatedReports();
             UpdateDiagnostics();
         }
 
         private void RunAllReports_Click(object sender, RoutedEventArgs e)
         {
+            QueueReproducibilityGate();
+        }
+
+        private void RunSweep_Click(object sender, RoutedEventArgs e)
+        {
+            if (SweepBlendComboBox.SelectedItem is not float blend)
+                return;
+            const string diffHash = "401D4ACC67C7DD1CBA2C01AC1B2C6562CF3587DD18CC99F15E1B31DB82C139F3";
+            QueueSweepRuns(blend, diffHash);
+        }
+
+        private void RunConfirmationGate_Click(object sender, RoutedEventArgs e)
+        {
+            const float winningBlend = 0.90f;
+            const string diffHash = "401D4ACC67C7DD1CBA2C01AC1B2C6562CF3587DD18CC99F15E1B31DB82C139F3";
+            _sweepBlend         = winningBlend;
+            _sweepPredictorMode = "RawVelocityAnchor";
+            _sweepDiffHash      = diffHash;
+
             _reportQueue.Clear();
-            foreach (ScenarioKind kind in Enum.GetValues<ScenarioKind>())
-            {
-                // GameplayReplay is a stub — no real frames are fed through the detector yet.
-                // Exclude it so it cannot produce an empty report that looks complete.
-                if (kind == ScenarioKind.GameplayReplay)
-                    continue;
-                _reportQueue.Enqueue(kind);
-            }
+            ScenarioKind[] scenarios =
+            [
+                ScenarioKind.DirectionReversal,
+                ScenarioKind.HighSpeedCross,
+                ScenarioKind.StopStart,
+            ];
+            string blendTag = "b0p90_confirm";
+            foreach (ScenarioKind scenario in scenarios)
+                for (int repetition = 1; repetition <= 5; repetition++)
+                    _reportQueue.Enqueue(new AutomatedReportRun(
+                        scenario, SyntheticProfile.Noisy, repetition,
+                        $"{scenario}_Noisy_{blendTag}_R{repetition:D2}"));
+
             _runningAllReports = true;
             RunNextAutomatedScenario();
         }
 
-        private void AdvanceAutomatedReports(DateTime now)
+        private void QueueReproducibilityGate()
         {
-            if (_runningAllReports && _reportScenarioEndsAt is DateTime endsAt && now >= endsAt)
+            _reportQueue.Clear();
+
+            ScenarioKind[] scenarios =
+            [
+                ScenarioKind.DirectionReversal,
+                ScenarioKind.HighSpeedCross,
+                ScenarioKind.StopStart,
+            ];
+
+            foreach (ScenarioKind scenario in scenarios)
+            {
+                for (int repetition = 1; repetition <= 5; repetition++)
+                {
+                    // Seed and git commit are appended to RunId in RebuildScenario once
+                    // the noise config is constructed; this prefix identifies the run slot.
+                    string runIdPrefix = $"{scenario}_Noisy_R{repetition:D2}";
+                    _reportQueue.Enqueue(new AutomatedReportRun(
+                        scenario,
+                        SyntheticProfile.Noisy,
+                        repetition,
+                        runIdPrefix));
+                }
+            }
+
+            _runningAllReports = true;
+            RunNextAutomatedScenario();
+        }
+
+        /// <summary>
+        /// Queues 3 repetitions of DirectionReversal and HighSpeedCross (and optionally StopStart
+        /// as a guard) for one blend value. Sets sweep experiment state so every report records
+        /// the predictor mode, blend weight, and diff hash.
+        /// </summary>
+        private void QueueSweepRuns(float blend, string diffHash, bool includeStopStartGuard = true)
+        {
+            _sweepBlend        = blend;
+            _sweepPredictorMode = "RawVelocityAnchor";
+            _sweepDiffHash     = diffHash;
+
+            _reportQueue.Clear();
+
+            ScenarioKind[] tuningScenarios = includeStopStartGuard
+                ? [ScenarioKind.DirectionReversal, ScenarioKind.HighSpeedCross, ScenarioKind.StopStart]
+                : [ScenarioKind.DirectionReversal, ScenarioKind.HighSpeedCross];
+
+            string blendTag = $"b{blend:F2}".Replace(".", "p");
+            foreach (ScenarioKind scenario in tuningScenarios)
+            {
+                for (int repetition = 1; repetition <= 3; repetition++)
+                {
+                    string runIdPrefix = $"{scenario}_Noisy_{blendTag}_R{repetition:D2}";
+                    _reportQueue.Enqueue(new AutomatedReportRun(
+                        scenario,
+                        SyntheticProfile.Noisy,
+                        repetition,
+                        runIdPrefix));
+                }
+            }
+
+            _runningAllReports = true;
+            RunNextAutomatedScenario();
+        }
+
+        private void RunFullMatrixClean_Click(object sender, RoutedEventArgs e)
+            => QueueFullMatrix(SyntheticProfile.Clean);
+
+        private void RunFullMatrixNoisy_Click(object sender, RoutedEventArgs e)
+            => QueueFullMatrix(SyntheticProfile.Noisy);
+
+        /// <summary>
+        /// Queues all 16 synthetic tracking scenarios × 1 rep for the given profile with
+        /// blend=0.90 sweep state active so every report records the experiment identity.
+        /// </summary>
+        private void QueueFullMatrix(SyntheticProfile profile)
+        {
+            const float blend    = 0.90f;
+            const string diffHash = "401D4ACC67C7DD1CBA2C01AC1B2C6562CF3587DD18CC99F15E1B31DB82C139F3";
+            _sweepBlend         = blend;
+            _sweepPredictorMode = "RawVelocityAnchor";
+            _sweepDiffHash      = diffHash;
+
+            _reportQueue.Clear();
+
+            ScenarioKind[] allScenarios =
+            [
+                ScenarioKind.StaticEnemy,
+                ScenarioKind.MovingEnemyHorizontal,
+                ScenarioKind.MovingEnemyVertical,
+                ScenarioKind.MovingEnemyDiagonal,
+                ScenarioKind.DirectionReversal,
+                ScenarioKind.StopStart,
+                ScenarioKind.TemporaryOcclusion,
+                ScenarioKind.ShortOcclusion,
+                ScenarioKind.LongOcclusion,
+                ScenarioKind.TwoEnemies,
+                ScenarioKind.EnemyAndFriendlyCrossing,
+                ScenarioKind.MultipleEnemiesCrossing,
+                ScenarioKind.HighSpeedCross,
+                ScenarioKind.SuddenAcceleration,
+                ScenarioKind.ThreeEnemiesConverging,
+                ScenarioKind.NoTarget,
+            ];
+
+            string profileTag = profile == SyntheticProfile.Noisy ? "Noisy" : "Clean";
+            foreach (ScenarioKind scenario in allScenarios)
+                _reportQueue.Enqueue(new AutomatedReportRun(
+                    scenario, profile, 1,
+                    $"{scenario}_{profileTag}_b0p90_matrix_R01"));
+
+            _runningAllReports = true;
+            RunNextAutomatedScenario();
+        }
+
+        /// <summary>Clears sweep experiment state after a sweep completes or is cancelled.</summary>
+        private void ClearSweepState()
+        {
+            _sweepBlend         = 0f;
+            _sweepPredictorMode = string.Empty;
+            _sweepDiffHash      = string.Empty;
+        }
+
+        private void AdvanceAutomatedReports()
+        {
+            if (_runningAllReports && _simulationClock.FrameIndex >= ScenarioDurationFrames)
             {
                 FlushScenarioReport();
                 RunNextAutomatedScenario();
@@ -248,20 +447,26 @@ namespace Aimmy2.TestArena
 
         private void RunNextAutomatedScenario()
         {
-            if (!_reportQueue.TryDequeue(out ScenarioKind kind))
+            if (!_reportQueue.TryDequeue(out AutomatedReportRun? run))
             {
+                _currentAutomatedRun = null;
                 _runningAllReports = false;
-                _reportScenarioEndsAt = null;
+                ClearSweepState();
                 ReportStatusLabel.Text = $"Complete: {_reportDirectory}";
                 return;
             }
 
-            if (!Equals(ScenarioComboBox.SelectedItem, kind))
-                ScenarioComboBox.SelectedItem = kind;
-            else
-                RebuildScenario(kind);
-            _reportScenarioEndsAt = DateTime.UtcNow + AutomatedScenarioDuration;
-            ReportStatusLabel.Text = $"Recording {kind} ({_reportQueue.Count + 1} remaining)";
+            NoiseProfileComboBox.SelectedItem = run.Profile;
+            ScenarioComboBox.SelectedItem = run.Scenario;
+
+            // Mandatory explicit rebuild: ensures the fixed clock, RNG seed, tracker state,
+            // and metrics are reset for every repetition regardless of whether the ComboBox
+            // selection changed.
+            _currentAutomatedRun = run;
+            RebuildScenario(run.Scenario);
+
+            ReportStatusLabel.Text =
+                $"Recording {run.Scenario} [{run.Profile}] repetition {run.Repetition}/5 ({_reportQueue.Count} queued)";
         }
 
         private void RecordScenarioMetrics(DateTime timestamp)
@@ -297,8 +502,13 @@ namespace Aimmy2.TestArena
 
             double inferenceMs = _aiManager?.InferenceMs ?? 0.0;
             double frameAgeMs = _aiManager?.FrameAge ?? 0.0;
-            double captureFps = _aiManager?.CaptureFps ?? (1.0 / Math.Max(0.001, _lastRenderDtSeconds));
-            _metricsRecorder.Record(timestamp, targets, detections, inferenceMs, frameAgeMs, captureFps);
+            // Capture FPS only applies when the real detection pipeline ran.
+            // Synthetic scenarios bypass YOLO; passing simulationFps here would imply synthetic
+            // capture activity in the report, which is misleading.
+            bool detectorRan = _scenario.Kind.Domain() == BenchmarkDomain.GameplayReplay && _aiManager != null;
+            double captureFps = detectorRan ? (_aiManager!.CaptureFps) : 0.0;
+            _metricsRecorder.Record(timestamp, targets, detections, inferenceMs, frameAgeMs, captureFps,
+                renderFps: 1.0 / Math.Max(0.001, _lastRenderDtSeconds));
         }
 
         private void FlushScenarioReport()
@@ -449,7 +659,7 @@ namespace Aimmy2.TestArena
                     $"Scenario: {_scenario.Kind}\n" +
                     $"Targets: {_scenario.Targets.Count}\n\n" +
                     $"Mode: Synthetic injection (YOLO bypassed)\n" +
-                    $"Profile: {SyntheticNoiseConfig.Clean.ProfileName}\n" +
+                    $"Profile: {(NoiseProfileComboBox.SelectedItem as SyntheticProfile? ?? SyntheticProfile.Clean).Configuration().ProfileName}\n" +
                     $"Render FPS: {1.0 / Math.Max(0.001, _lastRenderDtSeconds):F1}\n" +
                     $"DPI scale: {dpi.DpiScaleX:F2} x {dpi.DpiScaleY:F2}\n\n" +
                     $"Active Tracks: {_syntheticSource!.ActiveTracks}\n" +
@@ -478,6 +688,27 @@ namespace Aimmy2.TestArena
                 $"RY: {_aiManager.RY:F2}\n" +
                 $"Gamepad Connected: {_aiManager.GamepadConnected}";
             DiagnosticsText.Text += $"\nReports: {_reportDirectory}";
+        }
+
+        private static string GetGitCommitShort()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo("git", "rev-parse --short HEAD")
+                {
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+                using Process? proc = Process.Start(psi);
+                string? output = proc?.StandardOutput.ReadToEnd().Trim();
+                proc?.WaitForExit();
+                return string.IsNullOrWhiteSpace(output) ? "unknown" : output;
+            }
+            catch
+            {
+                return "unknown";
+            }
         }
 
         private void MainWindow_Closing(object? sender, System.ComponentModel.CancelEventArgs e)

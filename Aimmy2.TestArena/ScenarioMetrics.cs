@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -35,6 +36,22 @@ public sealed record ScenarioMetricsSummary(
     bool   DetectorExecuted,
     bool   DetectorMetricsGated,
     bool   TrackerMetricsGated,
+    string ClockMode,
+    int    SimulationHz,
+    int    SimulationFrames,
+    double SimulationDurationSeconds,
+    DateTime SimulationStartUtc,
+    DateTime SimulationEndUtc,
+    // Run identity (populated for automated repeated runs; empty/0 for manual runs).
+    string RunId,
+    int    Repetition,
+    string GitCommit,
+    // Tracker experiment configuration (populated for sweep runs; empty/0 for baseline runs).
+    string PredictorMode,
+    float  AssociationPredictionBlend,
+    string WorkingTreeDiffHash,
+    double RealElapsedMs,
+    double RenderFpsP50,
     // Injection configuration (populated for SyntheticTracking; "N/A" / 0 for GameplayReplay).
     string NoiseProfile,
     bool   InferenceMetricsApplicable,
@@ -53,6 +70,12 @@ public sealed record ScenarioMetricsSummary(
     int    MissedDetections,
     int    IdentitySwitches,
     int    TrackLosses,
+    int    PositionGateMissFrames,
+    int    AssociationLossEvents,
+    int    SameTrackOutsideGateFrames,
+    int    ConfirmedTrackExpiryEvents,
+    double MaximumPositionErrorPixels,
+    int    MaximumConsecutivePositionMissFrames,
     double MeanReacquisitionMs,
     double MeanPredictiveErrorPixels,
     double MeanGruErrorPixels,
@@ -62,6 +85,7 @@ public sealed record ScenarioMetricsSummary(
     double InferenceP99Ms,
     double FrameAgeP95Ms,
     double CaptureFpsP50,
+    bool   CaptureFpsApplicable,
     // Occlusion-specific metrics (non-zero only for scenarios with Visible=false phases).
     int    OcclusionFrames,
     // FP classification during occlusion:
@@ -116,12 +140,23 @@ public sealed class ScenarioMetricsRecorder
     private readonly List<double> _inferenceMs = new();
     private readonly List<double> _frameAgeMs = new();
     private readonly List<double> _captureFps = new();
+    private readonly List<double> _renderFps = new();
+    private readonly DateTime _realStartedAt = DateTime.UtcNow;
     private int _frames;
     private int _detections;
     private int _falsePositives;
     private int _misses;
     private int _identitySwitches;
     private int _trackLosses;
+    private int _positionGateMissFrames;
+    private int _associationLossEvents;
+    private int _sameTrackOutsideGateFrames;
+    private int _confirmedTrackExpiryEvents;
+    private double _maximumPositionErrorPixels;
+    private int _maximumConsecutivePositionMissFrames;
+    private readonly Dictionary<string, int> _consecutivePositionMissFrames = new();
+    private readonly HashSet<string> _associationLostTargets = new();
+    private readonly HashSet<string> _confirmedExpiredTargets = new();
     // Occlusion tracking.
     private int _occlusionFrames;
     private bool _trackIdPreservedAfterOcclusion = true;
@@ -163,6 +198,18 @@ public sealed class ScenarioMetricsRecorder
     private int _switchTracesWritten;
     /// <summary>Directory to write per-switch diagnostic CSVs into. Null disables CSV output.</summary>
     public string? SwitchTracePath { get; set; }
+    /// <summary>Unique identifier for this run, used in the output filename and report.</summary>
+    public string RunId { get; set; } = string.Empty;
+    /// <summary>Repetition number within an automated gate sequence (1-based; 0 = manual run).</summary>
+    public int Repetition { get; set; } = 0;
+    /// <summary>Short git commit hash stamped into the report for traceability.</summary>
+    public string GitCommit { get; set; } = string.Empty;
+    /// <summary>Tracker predictor mode label (e.g. "RawVelocityAnchor"); empty for baseline.</summary>
+    public string PredictorMode { get; set; } = string.Empty;
+    /// <summary>Blend weight between raw and smoothed measurement used for velocity sampling (0=full smooth, 1=full raw).</summary>
+    public float AssociationPredictionBlend { get; set; } = 0f;
+    /// <summary>SHA-256 of `git diff --binary` at run time; identifies uncommitted experiment state.</summary>
+    public string WorkingTreeDiffHash { get; set; } = string.Empty;
 
     public ScenarioMetricsRecorder(
         string scenario,
@@ -192,7 +239,8 @@ public sealed class ScenarioMetricsRecorder
         IReadOnlyList<ArenaDetection> detections,
         double inferenceMs,
         double frameAgeMs,
-        double captureFps)
+        double captureFps,
+        double? renderFps = null)
     {
         _frames++;
         _detections += detections.Count;
@@ -202,6 +250,7 @@ public sealed class ScenarioMetricsRecorder
             AddFinite(_frameAgeMs, frameAgeMs);
         }
         AddFinite(_captureFps, captureFps);
+        if (renderFps.HasValue) AddFinite(_renderFps, renderFps.Value);
         foreach (ArenaDetection detection in detections)
             AddFinite(_observationAges, detection.ObservationAgeMs);
 
@@ -284,6 +333,37 @@ public sealed class ScenarioMetricsRecorder
             if (di < 0)
             {
                 _misses++;
+                int consecutiveMisses = _consecutivePositionMissFrames.GetValueOrDefault(target.Id) + 1;
+                _consecutivePositionMissFrames[target.Id] = consecutiveMisses;
+                _maximumConsecutivePositionMissFrames = Math.Max(_maximumConsecutivePositionMissFrames, consecutiveMisses);
+
+                ArenaDetection? sameTrack = null;
+                if (_lastTrackByTarget.TryGetValue(target.Id, out int expectedTrackId))
+                    sameTrack = detections.FirstOrDefault(d => d.TrackId == expectedTrackId);
+
+                if (sameTrack != null)
+                {
+                    double positionError = Distance(target.Center, sameTrack.Center);
+                    _maximumPositionErrorPixels = Math.Max(_maximumPositionErrorPixels, positionError);
+                    if (positionError > _matchRadiusPixels)
+                    {
+                        _positionGateMissFrames++;
+                        _sameTrackOutsideGateFrames++;
+                        if (!_associationLostTargets.Contains(target.Id))
+                            BeginContinuityTrace("same_track_outside_gate", target.Id, expectedTrackId, snap);
+                    }
+                }
+                else if (_lastTrackByTarget.ContainsKey(target.Id) && _confirmedExpiredTargets.Add(target.Id))
+                {
+                    _confirmedTrackExpiryEvents++;
+                    BeginContinuityTrace("confirmed_track_expiry", target.Id, _lastTrackByTarget[target.Id], snap);
+                }
+
+                if (_associationLostTargets.Add(target.Id))
+                {
+                    _associationLossEvents++;
+                    BeginContinuityTrace("association_lost", target.Id, _lastTrackByTarget.GetValueOrDefault(target.Id), snap);
+                }
                 if (_lastTrackByTarget.ContainsKey(target.Id) && !_lostAtByTarget.ContainsKey(target.Id))
                 {
                     _lostAtByTarget[target.Id] = timestamp;
@@ -297,8 +377,14 @@ public sealed class ScenarioMetricsRecorder
             }
 
             ArenaDetection match = detections[di];
+            if (_associationLostTargets.Contains(target.Id))
+                BeginContinuityTrace("association_restored", target.Id, match.TrackId, snap);
+            _consecutivePositionMissFrames[target.Id] = 0;
+            _associationLostTargets.Remove(target.Id);
+            _confirmedExpiredTargets.Remove(target.Id);
             matchedDetections.Add(di);
             double bestDistance = Distance(target.Center, match.Center);
+            _maximumPositionErrorPixels = Math.Max(_maximumPositionErrorPixels, bestDistance);
 
             if (_lastTrackByTarget.TryGetValue(target.Id, out int previousTrack) && previousTrack != match.TrackId)
             {
@@ -457,7 +543,7 @@ public sealed class ScenarioMetricsRecorder
             Directory.CreateDirectory(SwitchTracePath);
             string safeScenario = string.Concat(_scenario.Select(c => char.IsLetterOrDigit(c) ? c : '_'));
             string file = Path.Combine(SwitchTracePath,
-                $"{safeScenario}_{trace.TargetId}_sw{_switchTracesWritten + 1}_old{trace.OldTrackId}_new{trace.NewTrackId}.csv");
+                $"{safeScenario}_{trace.TargetId}_{trace.EventKind}_{_switchTracesWritten + 1}_old{trace.OldTrackId}_new{trace.NewTrackId}.csv");
             var sb = new StringBuilder();
             sb.AppendLine("FrameIndex,Role,Timestamp,TargetId,TargetX,TargetY,AssignedTrackId,TrackX,TrackY,DistancePx,IsExtrapolated,ObsAgeMs,GruX,GruY,GruErrPx");
             foreach ((FrameSnap s, string role) in trace.Rows)
@@ -516,6 +602,20 @@ public sealed class ScenarioMetricsRecorder
         _detectorExecuted,
         _detectorMetricsGated,
         _trackerMetricsGated,
+        ClockMode:                         _domain == BenchmarkDomain.SyntheticTracking ? "FixedStep" : "WallClock",
+        SimulationHz:                      _domain == BenchmarkDomain.SyntheticTracking ? FixedSimulationClock.FrequencyHz : 0,
+        SimulationFrames:                  _domain == BenchmarkDomain.SyntheticTracking ? _frames : 0,
+        SimulationDurationSeconds:         _domain == BenchmarkDomain.SyntheticTracking ? (double)_frames / FixedSimulationClock.FrequencyHz : 0,
+        SimulationStartUtc:                _domain == BenchmarkDomain.SyntheticTracking ? FixedSimulationClock.EpochUtc : default,
+        SimulationEndUtc:                  _domain == BenchmarkDomain.SyntheticTracking ? FixedSimulationClock.EpochUtc.AddTicks((long)_frames * TimeSpan.TicksPerSecond / FixedSimulationClock.FrequencyHz) : default,
+        RunId:                             RunId,
+        Repetition:                        Repetition,
+        GitCommit:                         GitCommit,
+        PredictorMode:                     PredictorMode,
+        AssociationPredictionBlend:        AssociationPredictionBlend,
+        WorkingTreeDiffHash:               WorkingTreeDiffHash,
+        RealElapsedMs:                     Math.Max(0, (DateTime.UtcNow - _realStartedAt).TotalMilliseconds),
+        RenderFpsP50:                      Percentile(_renderFps, 0.50),
         NoiseProfile:                      _noiseConfig?.ProfileName ?? "N/A",
         InferenceMetricsApplicable:        _detectorExecuted,
         RandomSeed:                        _noiseConfig?.Seed ?? 0,
@@ -532,6 +632,12 @@ public sealed class ScenarioMetricsRecorder
         MissedDetections:         _misses,
         IdentitySwitches:         _identitySwitches,
         TrackLosses:              _trackLosses,
+        PositionGateMissFrames:   _positionGateMissFrames,
+        AssociationLossEvents:    _associationLossEvents,
+        SameTrackOutsideGateFrames: _sameTrackOutsideGateFrames,
+        ConfirmedTrackExpiryEvents: _confirmedTrackExpiryEvents,
+        MaximumPositionErrorPixels: _maximumPositionErrorPixels,
+        MaximumConsecutivePositionMissFrames: _maximumConsecutivePositionMissFrames,
         MeanReacquisitionMs:      Mean(_reacquisitionMs),
         MeanPredictiveErrorPixels: Mean(_predictiveErrors),
         MeanGruErrorPixels:       Mean(_gruErrors),
@@ -541,6 +647,7 @@ public sealed class ScenarioMetricsRecorder
         InferenceP99Ms:           Percentile(_inferenceMs, 0.99),
         FrameAgeP95Ms:            Percentile(_frameAgeMs, 0.95),
         CaptureFpsP50:            Percentile(_captureFps, 0.50),
+        CaptureFpsApplicable:     _detectorExecuted,
         OcclusionFrames:                        _occlusionFrames,
         ExpectedOcclusionPersistenceFrames:     _expectedOcclusionPersistenceFrames,
         GhostAfterPersistenceDeadline:          _ghostAfterPersistenceDeadline,
@@ -570,12 +677,29 @@ public sealed class ScenarioMetricsRecorder
 
     private sealed class SwitchTrace
     {
+        public string EventKind = "identity_switch";
         public string TargetId = "";
         public int OldTrackId;
         public int NewTrackId;
         public int SwitchFrameIndex;
         public List<(FrameSnap Snap, string Role)> Rows = new();
         public int AfterRemaining = SwitchWindowAfter;
+    }
+
+    private void BeginContinuityTrace(string eventKind, string targetId, int trackId, FrameSnap snap)
+    {
+        var trace = new SwitchTrace
+        {
+            EventKind = eventKind,
+            TargetId = targetId,
+            OldTrackId = trackId,
+            NewTrackId = trackId,
+            SwitchFrameIndex = snap.FrameIndex,
+        };
+        foreach (FrameSnap buffered in _snapBuffer)
+            trace.Rows.Add((buffered, "before"));
+        trace.Rows.Add((snap, eventKind));
+        _pendingSwitchTraces.Add(trace);
     }
 
     /// <summary>
@@ -720,13 +844,75 @@ public static class ScenarioReportWriter
     public static void Write(string outputDirectory, ScenarioMetricsSummary summary)
     {
         Directory.CreateDirectory(outputDirectory);
-        string safeScenario = string.Concat(summary.Scenario.Select(character => char.IsLetterOrDigit(character) ? character : '_'));
-        string stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff");
-        string stem = Path.Combine(outputDirectory, $"{stamp}_{safeScenario}");
+        string stem;
+        if (!string.IsNullOrEmpty(summary.RunId))
+        {
+            string safeRunId = string.Concat(summary.RunId.Select(c => char.IsLetterOrDigit(c) || c == '_' || c == '-' ? c : '_'));
+            stem = Path.Combine(outputDirectory, safeRunId);
+        }
+        else
+        {
+            string safeScenario = string.Concat(summary.Scenario.Select(c => char.IsLetterOrDigit(c) ? c : '_'));
+            string stamp = DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff");
+            stem = Path.Combine(outputDirectory, $"{stamp}_{safeScenario}");
+        }
         File.WriteAllText(stem + ".json", JsonSerializer.Serialize(summary, new JsonSerializerOptions { WriteIndented = true }));
+        File.WriteAllText(stem + ".hash", CanonicalHash(summary));
         var csv = new StringBuilder();
         csv.AppendLine(string.Join(',', typeof(ScenarioMetricsSummary).GetProperties().Select(property => property.Name)));
         csv.AppendLine(string.Join(',', typeof(ScenarioMetricsSummary).GetProperties().Select(property => Convert.ToString(property.GetValue(summary), System.Globalization.CultureInfo.InvariantCulture))));
         File.WriteAllText(stem + ".csv", csv.ToString());
+    }
+
+    /// <summary>
+    /// Canonical projection for reproducibility verification: excludes wall-clock timings,
+    /// render FPS, file timestamps, and absolute paths. Floating-point values are rounded to
+    /// six decimal places before hashing so serialization differences do not create false deltas.
+    /// </summary>
+    public static string CanonicalHash(ScenarioMetricsSummary s)
+    {
+        var projection = new
+        {
+            s.Scenario,
+            s.NoiseProfile,
+            s.RandomSeed,
+            s.PredictorMode,
+            AssociationPredictionBlend = Math.Round(s.AssociationPredictionBlend, 6),
+            s.SimulationFrames,
+            s.DetectionCount,
+            s.FalsePositives,
+            s.MissedDetections,
+            s.PositionGateMissFrames,
+            s.AssociationLossEvents,
+            s.SameTrackOutsideGateFrames,
+            s.ConfirmedTrackExpiryEvents,
+            MaximumPositionErrorPixels = Math.Round(s.MaximumPositionErrorPixels, 6),
+            s.MaximumConsecutivePositionMissFrames,
+            s.IdentitySwitches,
+            s.IdentitySwitchesOutsideAmbiguity,
+            s.UnexpectedIdentitySwitchesOutsideAmbiguity,
+            s.ExpectedTrackReinitializations,
+            s.OcclusionFrames,
+            s.ExpectedOcclusionPersistenceFrames,
+            s.GhostAfterPersistenceDeadline,
+            s.DuplicateAfterReappearance,
+            s.UnrelatedFalsePositive,
+            s.OcclusionCycleCount,
+            s.SuccessfulReacquisitions,
+            s.FailedReacquisitions,
+            s.MaxReacquisitionFrames,
+            s.TrackIdPreservedAfterOcclusion,
+            s.OldTrackExpiredByDeadline,
+            MeanReacquisitionMs = Math.Round(s.MeanReacquisitionMs, 6),
+            MeanPredictiveErrorPixels = Math.Round(s.MeanPredictiveErrorPixels, 6),
+            ObservationAgeP95Ms = Math.Round(s.ObservationAgeP95Ms, 6),
+        };
+        string json = JsonSerializer.Serialize(projection, new JsonSerializerOptions
+        {
+            WriteIndented = false,
+            PropertyNamingPolicy = null,
+        });
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(json));
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 }
