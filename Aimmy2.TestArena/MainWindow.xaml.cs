@@ -111,16 +111,28 @@ namespace Aimmy2.TestArena
             _visuals.Clear();
 
             _syntheticSource?.Dispose();
-            _syntheticSource = kind.Domain() == BenchmarkDomain.SyntheticTracking
-                ? new SyntheticObservationSource(SyntheticNoiseConfig.Clean)
+            SyntheticNoiseConfig? noiseConfig = kind.Domain() == BenchmarkDomain.SyntheticTracking
+                ? SyntheticNoiseConfig.Clean
                 : null;
+            _syntheticSource = noiseConfig != null ? new SyntheticObservationSource(noiseConfig) : null;
+
+            // YOLO capture/inference must not run during synthetic scenarios: resource contention
+            // distorts frame timing, observation age and tracker update cadence. Stop it now.
+            if (_syntheticSource != null && _aiManager != null)
+            {
+                StopPipeline();
+                ModelPipelineCheckBox.IsChecked = false;
+            }
 
             double width = ArenaCanvas.ActualWidth > 0 ? ArenaCanvas.ActualWidth : 900;
             double height = ArenaCanvas.ActualHeight > 0 ? ArenaCanvas.ActualHeight : 700;
             _scenario = new Scenario(kind, width, height);
 
             bool detectorExecuted = kind.Domain() == BenchmarkDomain.GameplayReplay && _aiManager != null;
-            _metricsRecorder = new ScenarioMetricsRecorder(kind.ToString(), kind, detectorExecuted: detectorExecuted);
+            _metricsRecorder = new ScenarioMetricsRecorder(
+                kind.ToString(), kind,
+                detectorExecuted: detectorExecuted,
+                noiseConfig: noiseConfig);
 
             foreach (var target in _scenario.Targets)
             {
@@ -211,7 +223,13 @@ namespace Aimmy2.TestArena
         {
             _reportQueue.Clear();
             foreach (ScenarioKind kind in Enum.GetValues<ScenarioKind>())
+            {
+                // GameplayReplay is a stub — no real frames are fed through the detector yet.
+                // Exclude it so it cannot produce an empty report that looks complete.
+                if (kind == ScenarioKind.GameplayReplay)
+                    continue;
                 _reportQueue.Enqueue(kind);
+            }
             _runningAllReports = true;
             RunNextAutomatedScenario();
         }
@@ -408,13 +426,32 @@ namespace Aimmy2.TestArena
 
             if (hasSyntheticInjection && _aiManager == null)
             {
+                var dpi = System.Windows.Media.VisualTreeHelper.GetDpi(this);
+                string alignCheck = "";
+                if (_scenario.Targets.Count > 0 && _syntheticSource!.CurrentObservations.Count > 0)
+                {
+                    ArenaTarget first = _scenario.Targets[0];
+                    System.Windows.Point canvasPos = first.Position;
+                    System.Windows.Point screenPos = ArenaCanvas.IsLoaded
+                        ? ArenaCanvas.PointToScreen(canvasPos)
+                        : canvasPos;
+                    var obs = _syntheticSource.CurrentObservations[0];
+                    alignCheck =
+                        $"Target canvas:  ({canvasPos.X:F0}, {canvasPos.Y:F0})\n" +
+                        $"Target screen:  ({screenPos.X:F0}, {screenPos.Y:F0})\n" +
+                        $"Track center:   ({obs.Center.X:F0}, {obs.Center.Y:F0})\n";
+                }
+
                 DiagnosticsText.Text =
                     $"Scenario: {_scenario.Kind}\n" +
                     $"Targets: {_scenario.Targets.Count}\n\n" +
                     $"Mode: Synthetic injection (YOLO bypassed)\n" +
-                    $"Render FPS: {1.0 / Math.Max(0.001, _lastRenderDtSeconds):F1}\n\n" +
+                    $"Profile: {SyntheticNoiseConfig.Clean.ProfileName}\n" +
+                    $"Render FPS: {1.0 / Math.Max(0.001, _lastRenderDtSeconds):F1}\n" +
+                    $"DPI scale: {dpi.DpiScaleX:F2} x {dpi.DpiScaleY:F2}\n\n" +
                     $"Active Tracks: {_syntheticSource!.ActiveTracks}\n" +
                     $"Observations: {_syntheticSource.CurrentObservations.Count}\n\n" +
+                    alignCheck +
                     $"Reports: {_reportDirectory}";
                 return;
             }

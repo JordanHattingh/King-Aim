@@ -22,6 +22,7 @@ namespace Aimmy2.TestArena
         private readonly AccessibilityObserver _accessibilityObserver;
         private readonly SyntheticNoiseConfig _noise;
         private readonly Random _rng;
+        private int _frameIndex;
 
         public IReadOnlyList<AccessibilityObservation> CurrentObservations { get; private set; }
             = Array.Empty<AccessibilityObservation>();
@@ -38,6 +39,8 @@ namespace Aimmy2.TestArena
         /// <summary>
         /// Inject one frame of ground-truth observations into the tracker.
         /// Must be called on the UI thread because <paramref name="toScreen"/> uses WPF layout coordinates.
+        /// Ground-truth <see cref="ArenaTarget.Id"/> is used only for drop decisions and never
+        /// reaches the <see cref="TrackManager"/>; association sees only box/class/confidence.
         /// </summary>
         public void Inject(
             IReadOnlyList<ArenaTarget> targets,
@@ -53,97 +56,140 @@ namespace Aimmy2.TestArena
             _trackManager.ScreenWidth = screenWidth;
             _trackManager.ScreenHeight = screenHeight;
 
+            // Contiguous occlusion: drop ALL visible targets for a deterministic window.
+            bool inContiguousOcclusion = _noise.ContiguousOcclusionPeriodFrames > 0
+                && (_frameIndex % _noise.ContiguousOcclusionPeriodFrames)
+                   < _noise.ContiguousOcclusionDurationFrames;
+
             var predictions = new List<Prediction>();
 
-            foreach (ArenaTarget target in targets.Where(t => t.Visible))
+            if (!inContiguousOcclusion)
             {
-                if (_noise.DropProbability > 0.0 && _rng.NextDouble() < _noise.DropProbability)
-                    continue;
-
-                PointF center = toScreen(target.Position);
-
-                float cx = center.X + (float)((_rng.NextDouble() * 2 - 1) * _noise.PositionNoisePx);
-                float cy = center.Y + (float)((_rng.NextDouble() * 2 - 1) * _noise.PositionNoisePx);
-                float w = (float)target.Size.Width * (1f + (float)((_rng.NextDouble() * 2 - 1) * _noise.SizeNoise));
-                float h = (float)target.Size.Height * (1f + (float)((_rng.NextDouble() * 2 - 1) * _noise.SizeNoise));
-                float conf = Math.Clamp(
-                    _noise.BaseConfidence + (float)((_rng.NextDouble() * 2 - 1) * _noise.ConfidenceNoise),
-                    0.05f, 1.0f);
-
-                int classId = target.Kind switch
+                foreach (ArenaTarget target in targets.Where(t => t.Visible))
                 {
-                    TargetKind.Friendly => 1,
-                    TargetKind.Player => 2,
-                    _ => 0,
-                };
+                    // Independent per-frame random dropout.
+                    if (_noise.DropProbability > 0.0 && _rng.NextDouble() < _noise.DropProbability)
+                        continue;
 
-                var screenRect = new RectangleF(cx - w / 2f, cy - h / 2f, w, h);
-                predictions.Add(new Prediction
-                {
-                    Rectangle = screenRect,
-                    ScreenRectangle = screenRect,
-                    Confidence = conf,
-                    ClassId = classId,
-                    ClassName = classId switch { 1 => "friendly", 2 => "player", _ => "enemy" },
-                });
-            }
+                    PointF center = toScreen(target.Position);
 
-            for (int i = 0; i < _noise.FalsePositiveCount; i++)
-            {
-                float fpX = screenLeft + (float)(_rng.NextDouble() * screenWidth);
-                float fpY = screenTop + (float)(_rng.NextDouble() * screenHeight);
-                float conf = Math.Clamp(
-                    _noise.BaseConfidence + (float)((_rng.NextDouble() * 2 - 1) * _noise.ConfidenceNoise),
-                    0.05f, 1.0f);
-                var fpRect = new RectangleF(fpX - 30f, fpY - 50f, 60f, 100f);
-                predictions.Add(new Prediction
+                    float cx = center.X + (float)((_rng.NextDouble() * 2 - 1) * _noise.PositionNoisePx);
+                    float cy = center.Y + (float)((_rng.NextDouble() * 2 - 1) * _noise.PositionNoisePx);
+                    float w = (float)target.Size.Width * (1f + (float)((_rng.NextDouble() * 2 - 1) * _noise.SizeNoise));
+                    float h = (float)target.Size.Height * (1f + (float)((_rng.NextDouble() * 2 - 1) * _noise.SizeNoise));
+                    float conf = Math.Clamp(
+                        _noise.BaseConfidence + (float)((_rng.NextDouble() * 2 - 1) * _noise.ConfidenceNoise),
+                        0.05f, 1.0f);
+
+                    int classId = target.Kind switch
+                    {
+                        TargetKind.Friendly => 1,
+                        TargetKind.Player   => 2,
+                        _                   => 0,
+                    };
+
+                    var screenRect = new RectangleF(cx - w / 2f, cy - h / 2f, w, h);
+                    predictions.Add(new Prediction
+                    {
+                        Rectangle       = screenRect,
+                        ScreenRectangle = screenRect,
+                        Confidence      = conf,
+                        ClassId         = classId,
+                        ClassName       = classId switch { 1 => "friendly", 2 => "player", _ => "enemy" },
+                    });
+                }
+
+                for (int i = 0; i < _noise.FalsePositiveCount; i++)
                 {
-                    Rectangle = fpRect,
-                    ScreenRectangle = fpRect,
-                    Confidence = conf,
-                    ClassId = 0,
-                    ClassName = "enemy",
-                });
+                    float fpX = screenLeft + (float)(_rng.NextDouble() * screenWidth);
+                    float fpY = screenTop  + (float)(_rng.NextDouble() * screenHeight);
+                    float conf = Math.Clamp(
+                        _noise.BaseConfidence + (float)((_rng.NextDouble() * 2 - 1) * _noise.ConfidenceNoise),
+                        0.05f, 1.0f);
+                    var fpRect = new RectangleF(fpX - 30f, fpY - 50f, 60f, 100f);
+                    predictions.Add(new Prediction
+                    {
+                        Rectangle       = fpRect,
+                        ScreenRectangle = fpRect,
+                        Confidence      = conf,
+                        ClassId         = 0,
+                        ClassName       = "enemy",
+                    });
+                }
             }
 
             var tracks = _trackManager.Update(predictions, ClassRoles, frameTime);
             CurrentObservations = _accessibilityObserver.Observe(frameTime);
             ActiveTracks = tracks.Count;
+            _frameIndex++;
         }
+
+        public bool InContiguousOcclusion =>
+            _noise.ContiguousOcclusionPeriodFrames > 0
+            && (_frameIndex % _noise.ContiguousOcclusionPeriodFrames) < _noise.ContiguousOcclusionDurationFrames;
 
         public void Dispose() { }
     }
 
     /// <summary>
     /// Noise and FP injection parameters for one SyntheticTracking profile.
+    /// All fields with defaults are backward-compatible with existing call sites.
     /// </summary>
     public sealed record SyntheticNoiseConfig(
         double PositionNoisePx,
         double SizeNoise,
-        float BaseConfidence,
-        float ConfidenceNoise,
+        float  BaseConfidence,
+        float  ConfidenceNoise,
         double DropProbability,
-        int FalsePositiveCount,
-        int Seed)
+        int    FalsePositiveCount,
+        int    Seed,
+        string ProfileName                    = "Custom",
+        int    ContiguousOcclusionPeriodFrames = 0,
+        int    ContiguousOcclusionDurationFrames = 0)
     {
-        /// <summary>Tight position noise, no drops, no FPs. Default for automated reports.</summary>
+        /// <summary>
+        /// Tight position noise, no drops, no FPs.
+        /// Establishes tracker correctness. Default for automated reports.
+        /// </summary>
         public static readonly SyntheticNoiseConfig Clean =
             new(PositionNoisePx: 1.5, SizeNoise: 0.01f, BaseConfidence: 0.90f,
-                ConfidenceNoise: 0.03f, DropProbability: 0.0, FalsePositiveCount: 0, Seed: 42);
+                ConfidenceNoise: 0.03f, DropProbability: 0.0, FalsePositiveCount: 0,
+                Seed: 42, ProfileName: "Clean");
 
-        /// <summary>High position noise and occasional detection drops.</summary>
+        /// <summary>
+        /// High position noise and occasional independent frame drops.
+        /// Tests Kalman stability under measurement noise.
+        /// </summary>
         public static readonly SyntheticNoiseConfig Noisy =
             new(PositionNoisePx: 8.0, SizeNoise: 0.05f, BaseConfidence: 0.75f,
-                ConfidenceNoise: 0.10f, DropProbability: 0.05, FalsePositiveCount: 0, Seed: 42);
+                ConfidenceNoise: 0.10f, DropProbability: 0.05, FalsePositiveCount: 0,
+                Seed: 42, ProfileName: "Noisy");
 
-        /// <summary>30 % per-frame drop probability simulates heavy occlusion.</summary>
-        public static readonly SyntheticNoiseConfig Occluded =
+        /// <summary>
+        /// 30 % independent per-frame drop probability. Resembles bursty detection noise,
+        /// not a realistic contiguous occlusion. Use <see cref="Occluded"/> for that.
+        /// </summary>
+        public static readonly SyntheticNoiseConfig RandomDropout =
             new(PositionNoisePx: 3.0, SizeNoise: 0.02f, BaseConfidence: 0.80f,
-                ConfidenceNoise: 0.05f, DropProbability: 0.30, FalsePositiveCount: 0, Seed: 42);
+                ConfidenceNoise: 0.05f, DropProbability: 0.30, FalsePositiveCount: 0,
+                Seed: 42, ProfileName: "RandomDropout");
 
-        /// <summary>Clean track plus 3 random FP injections per frame.</summary>
+        /// <summary>
+        /// Deterministic contiguous gap: every 90 frames, all observations are dropped
+        /// for 45 consecutive frames (~0.75 s at 60 fps, ~1.5 s at 30 fps).
+        /// Tests prediction continuity and track reacquisition after a known gap.
+        /// </summary>
+        public static readonly SyntheticNoiseConfig Occluded =
+            new(PositionNoisePx: 1.5, SizeNoise: 0.01f, BaseConfidence: 0.90f,
+                ConfidenceNoise: 0.03f, DropProbability: 0.0, FalsePositiveCount: 0,
+                Seed: 42, ProfileName: "Occluded",
+                ContiguousOcclusionPeriodFrames: 90,
+                ContiguousOcclusionDurationFrames: 45);
+
+        /// <summary>Clean track plus 3 random FP injections per frame. Tests association resistance.</summary>
         public static readonly SyntheticNoiseConfig FalsePositiveStress =
             new(PositionNoisePx: 1.5, SizeNoise: 0.01f, BaseConfidence: 0.90f,
-                ConfidenceNoise: 0.03f, DropProbability: 0.0, FalsePositiveCount: 3, Seed: 42);
+                ConfidenceNoise: 0.03f, DropProbability: 0.0, FalsePositiveCount: 3,
+                Seed: 42, ProfileName: "FalsePositiveStress");
     }
 }

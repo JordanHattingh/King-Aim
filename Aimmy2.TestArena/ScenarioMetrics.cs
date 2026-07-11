@@ -32,15 +32,26 @@ public sealed record ArenaDetection(
 public sealed record ScenarioMetricsSummary(
     string Scenario,
     string BenchmarkDomain,
-    bool DetectorExecuted,
-    bool DetectorMetricsGated,
-    bool TrackerMetricsGated,
-    int Frames,
-    int DetectionCount,
-    int FalsePositives,
-    int MissedDetections,
-    int IdentitySwitches,
-    int TrackLosses,
+    bool   DetectorExecuted,
+    bool   DetectorMetricsGated,
+    bool   TrackerMetricsGated,
+    // Injection configuration (populated for SyntheticTracking; "N/A" / 0 for GameplayReplay).
+    string NoiseProfile,
+    bool   InferenceMetricsApplicable,
+    int    RandomSeed,
+    double PositionNoiseSigmaPx,
+    double SizeNoisePercent,
+    double DropProbabilityPct,
+    int    FalsePositivesPerFrame,
+    int    ContiguousOcclusionPeriodFrames,
+    int    ContiguousOcclusionDurationFrames,
+    // Metrics.
+    int    Frames,
+    int    DetectionCount,
+    int    FalsePositives,
+    int    MissedDetections,
+    int    IdentitySwitches,
+    int    TrackLosses,
     double MeanReacquisitionMs,
     double MeanPredictiveErrorPixels,
     double MeanGruErrorPixels,
@@ -58,6 +69,7 @@ public sealed class ScenarioMetricsRecorder
     private readonly bool _detectorExecuted;
     private readonly bool _detectorMetricsGated;
     private readonly bool _trackerMetricsGated;
+    private readonly SyntheticNoiseConfig? _noiseConfig;
     private readonly double _matchRadiusPixels;
     private readonly Dictionary<string, int> _lastTrackByTarget = new();
     private readonly Dictionary<string, DateTime> _lostAtByTarget = new();
@@ -79,6 +91,7 @@ public sealed class ScenarioMetricsRecorder
         string scenario,
         ScenarioKind kind,
         bool detectorExecuted = true,
+        SyntheticNoiseConfig? noiseConfig = null,
         double matchRadiusPixels = 120)
     {
         _scenario = scenario;
@@ -86,6 +99,7 @@ public sealed class ScenarioMetricsRecorder
         _detectorExecuted = detectorExecuted;
         _detectorMetricsGated = kind.DetectorMetricsGated();
         _trackerMetricsGated = kind.TrackerMetricsGated();
+        _noiseConfig = noiseConfig;
         _matchRadiusPixels = matchRadiusPixels;
     }
 
@@ -101,8 +115,13 @@ public sealed class ScenarioMetricsRecorder
     {
         _frames++;
         _detections += detections.Count;
-        AddFinite(_inferenceMs, inferenceMs);
-        AddFinite(_frameAgeMs, frameAgeMs);
+        // Only accumulate inference/frameAge when the detector actually ran.
+        // For SyntheticTracking injection, these values are meaningless (always 0).
+        if (_detectorExecuted)
+        {
+            AddFinite(_inferenceMs, inferenceMs);
+            AddFinite(_frameAgeMs, frameAgeMs);
+        }
         AddFinite(_captureFps, captureFps);
         foreach (ArenaDetection detection in detections)
             AddFinite(_observationAges, detection.ObservationAgeMs);
@@ -154,21 +173,30 @@ public sealed class ScenarioMetricsRecorder
         _detectorExecuted,
         _detectorMetricsGated,
         _trackerMetricsGated,
-        _frames,
-        _detections,
-        _falsePositives,
-        _misses,
-        _identitySwitches,
-        _trackLosses,
-        Mean(_reacquisitionMs),
-        Mean(_predictiveErrors),
-        Mean(_gruErrors),
-        Percentile(_observationAges, 0.95),
-        Percentile(_inferenceMs, 0.50),
-        Percentile(_inferenceMs, 0.95),
-        Percentile(_inferenceMs, 0.99),
-        Percentile(_frameAgeMs, 0.95),
-        Percentile(_captureFps, 0.50));
+        NoiseProfile:                      _noiseConfig?.ProfileName ?? "N/A",
+        InferenceMetricsApplicable:        _detectorExecuted,
+        RandomSeed:                        _noiseConfig?.Seed ?? 0,
+        PositionNoiseSigmaPx:              _noiseConfig?.PositionNoisePx ?? 0,
+        SizeNoisePercent:                  (_noiseConfig?.SizeNoise ?? 0) * 100,
+        DropProbabilityPct:                (_noiseConfig?.DropProbability ?? 0) * 100,
+        FalsePositivesPerFrame:            _noiseConfig?.FalsePositiveCount ?? 0,
+        ContiguousOcclusionPeriodFrames:   _noiseConfig?.ContiguousOcclusionPeriodFrames ?? 0,
+        ContiguousOcclusionDurationFrames: _noiseConfig?.ContiguousOcclusionDurationFrames ?? 0,
+        Frames:                   _frames,
+        DetectionCount:           _detections,
+        FalsePositives:           _falsePositives,
+        MissedDetections:         _misses,
+        IdentitySwitches:         _identitySwitches,
+        TrackLosses:              _trackLosses,
+        MeanReacquisitionMs:      Mean(_reacquisitionMs),
+        MeanPredictiveErrorPixels: Mean(_predictiveErrors),
+        MeanGruErrorPixels:       Mean(_gruErrors),
+        ObservationAgeP95Ms:      Percentile(_observationAges, 0.95),
+        InferenceP50Ms:           Percentile(_inferenceMs, 0.50),
+        InferenceP95Ms:           Percentile(_inferenceMs, 0.95),
+        InferenceP99Ms:           Percentile(_inferenceMs, 0.99),
+        FrameAgeP95Ms:            Percentile(_frameAgeMs, 0.95),
+        CaptureFpsP50:            Percentile(_captureFps, 0.50));
 
     private static double Distance(PointF a, PointF b)
     {
