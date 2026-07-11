@@ -26,7 +26,7 @@ $BaselineDir = "C:\KingAimTraining\baseline\yolov8-e040"
 $ParityDir   = Join-Path $BaselineDir "parity"
 $PtFile      = Join-Path $BaselineDir "kingaim-yolov8-baseline-e040.pt"
 $OnnxFile    = Join-Path $BaselineDir "kingaim-yolov8-baseline-e040-fp32.onnx"
-$TestImage   = Join-Path $RepoRoot "readme_assets\DT1.png"
+$GameplayDir = Join-Path $RepoRoot "readme_assets"
 $DmlScript   = Join-Path $TrainingDir "tools\run_dml_parity.py"
 $DmlVenv     = "C:\Tmp\dml_venv"
 
@@ -72,8 +72,13 @@ Gate "Python unit tests (29)" {
 
 # -- Gate 2: CPU ONNX parity -------------------------------------------------
 Gate "CPU ONNX parity (CPUExecutionProvider)" {
+    # Build --image args from all DT*.png gameplay frames in readme_assets
     $imgArgs = @()
-    if (Test-Path $TestImage) { $imgArgs = @("--image", $TestImage) }
+    $gameplayImages = Get-ChildItem $GameplayDir -Filter "DT*.png" -ErrorAction SilentlyContinue
+    foreach ($img in $gameplayImages) {
+        $imgArgs += "--image"
+        $imgArgs += $img.FullName
+    }
     python (Join-Path $TrainingDir "validate_detector_onnx.py") `
         --pt          $PtFile   `
         --onnx        $OnnxFile `
@@ -92,7 +97,8 @@ Write-Host ""
 Write-Host "=== DirectML ONNX parity ===" -ForegroundColor Cyan
 if ($DmlReady) {
     $imgArgs = @()
-    if (Test-Path $TestImage) { $imgArgs = @("--image", $TestImage) }
+    $gameplayImages = Get-ChildItem $GameplayDir -Filter "DT*.png" -ErrorAction SilentlyContinue
+    foreach ($img in $gameplayImages) { $imgArgs += "--image"; $imgArgs += $img.FullName }
     try {
         & $DmlPy $DmlScript --onnx $OnnxFile --output-dir $ParityDir @imgArgs
         if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { throw "exit $LASTEXITCODE" }
