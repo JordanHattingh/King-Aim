@@ -23,6 +23,8 @@ namespace Aimmy2.TestArena
 
         private AIManager? _aiManager;
         private IGamepadOutput? _gamepadOutput;
+        private SyntheticObservationSource? _syntheticSource;
+        private double _lastRenderDtSeconds = 1.0 / 60;
 
         private readonly UdpClient _pointingTelemetry = new();
         private readonly IPEndPoint _pointingTelemetryEndpoint = new(IPAddress.Loopback, 28761);
@@ -108,10 +110,17 @@ namespace Aimmy2.TestArena
             }
             _visuals.Clear();
 
+            _syntheticSource?.Dispose();
+            _syntheticSource = kind.Domain() == BenchmarkDomain.SyntheticTracking
+                ? new SyntheticObservationSource(SyntheticNoiseConfig.Clean)
+                : null;
+
             double width = ArenaCanvas.ActualWidth > 0 ? ArenaCanvas.ActualWidth : 900;
             double height = ArenaCanvas.ActualHeight > 0 ? ArenaCanvas.ActualHeight : 700;
             _scenario = new Scenario(kind, width, height);
-            _metricsRecorder = new ScenarioMetricsRecorder(kind.ToString(), kind, detectorExecuted: _aiManager != null);
+
+            bool detectorExecuted = kind.Domain() == BenchmarkDomain.GameplayReplay && _aiManager != null;
+            _metricsRecorder = new ScenarioMetricsRecorder(kind.ToString(), kind, detectorExecuted: detectorExecuted);
 
             foreach (var target in _scenario.Targets)
             {
@@ -159,8 +168,21 @@ namespace Aimmy2.TestArena
             var now = DateTime.UtcNow;
             double dt = Math.Clamp((now - _lastTick).TotalSeconds, 0, 0.1);
             _lastTick = now;
+            _lastRenderDtSeconds = dt > 0 ? dt : _lastRenderDtSeconds;
 
             _scenario.Advance(dt);
+
+            if (_syntheticSource != null && ArenaCanvas.ActualWidth > 0)
+            {
+                _syntheticSource.Inject(
+                    _scenario.Targets,
+                    now,
+                    p => { var s = ArenaCanvas.PointToScreen(p); return new System.Drawing.PointF((float)s.X, (float)s.Y); },
+                    DisplayManager.ScreenLeft,
+                    DisplayManager.ScreenTop,
+                    DisplayManager.ScreenWidth,
+                    DisplayManager.ScreenHeight);
+            }
 
             foreach (var target in _scenario.Targets)
             {
@@ -187,12 +209,6 @@ namespace Aimmy2.TestArena
 
         private void RunAllReports_Click(object sender, RoutedEventArgs e)
         {
-            if (_aiManager == null)
-            {
-                ReportStatusLabel.Text = "Enable the full pipeline first.";
-                return;
-            }
-
             _reportQueue.Clear();
             foreach (ScenarioKind kind in Enum.GetValues<ScenarioKind>())
                 _reportQueue.Enqueue(kind);
@@ -229,7 +245,16 @@ namespace Aimmy2.TestArena
 
         private void RecordScenarioMetrics(DateTime timestamp)
         {
-            if (_aiManager == null || _metricsRecorder == null || ArenaCanvas.ActualWidth <= 0)
+            if (_metricsRecorder == null || ArenaCanvas.ActualWidth <= 0)
+                return;
+
+            // SyntheticTracking uses injected observations; GameplayReplay requires the AI pipeline.
+            IReadOnlyList<AccessibilityObservation>? observations =
+                _scenario.Kind.Domain() == BenchmarkDomain.SyntheticTracking && _syntheticSource != null
+                    ? _syntheticSource.CurrentObservations
+                    : _aiManager?.CurrentObservations;
+
+            if (observations == null)
                 return;
 
             ArenaGroundTruth[] targets = _scenario.Targets.Select(target =>
@@ -237,7 +262,8 @@ namespace Aimmy2.TestArena
                 Point screen = ArenaCanvas.PointToScreen(target.Position);
                 return new ArenaGroundTruth(target.Id, new System.Drawing.PointF((float)screen.X, (float)screen.Y), target.Visible);
             }).ToArray();
-            ArenaDetection[] detections = _aiManager.CurrentObservations.Select(observation => new ArenaDetection(
+
+            ArenaDetection[] detections = observations.Select(observation => new ArenaDetection(
                 observation.TrackId,
                 new System.Drawing.PointF(observation.Center.X, observation.Center.Y),
                 observation.BoundingBoxIsExtrapolated,
@@ -247,7 +273,11 @@ namespace Aimmy2.TestArena
                         (float)(SystemParameters.VirtualScreenLeft + predicted.X * SystemParameters.VirtualScreenWidth),
                         (float)(SystemParameters.VirtualScreenTop + predicted.Y * SystemParameters.VirtualScreenHeight))
                     : null)).ToArray();
-            _metricsRecorder.Record(timestamp, targets, detections, _aiManager.InferenceMs, _aiManager.FrameAge, _aiManager.CaptureFps);
+
+            double inferenceMs = _aiManager?.InferenceMs ?? 0.0;
+            double frameAgeMs = _aiManager?.FrameAge ?? 0.0;
+            double captureFps = _aiManager?.CaptureFps ?? (1.0 / Math.Max(0.001, _lastRenderDtSeconds));
+            _metricsRecorder.Record(timestamp, targets, detections, inferenceMs, frameAgeMs, captureFps);
         }
 
         private void FlushScenarioReport()
@@ -365,7 +395,10 @@ namespace Aimmy2.TestArena
 
         private void UpdateDiagnostics()
         {
-            if (_aiManager == null)
+            bool hasSyntheticInjection = _syntheticSource != null
+                && _scenario.Kind.Domain() == BenchmarkDomain.SyntheticTracking;
+
+            if (_aiManager == null && !hasSyntheticInjection)
             {
                 DiagnosticsText.Text =
                     $"Scenario: {_scenario.Kind}\nTargets: {_scenario.Targets.Count}\n\n" +
@@ -373,10 +406,23 @@ namespace Aimmy2.TestArena
                 return;
             }
 
+            if (hasSyntheticInjection && _aiManager == null)
+            {
+                DiagnosticsText.Text =
+                    $"Scenario: {_scenario.Kind}\n" +
+                    $"Targets: {_scenario.Targets.Count}\n\n" +
+                    $"Mode: Synthetic injection (YOLO bypassed)\n" +
+                    $"Render FPS: {1.0 / Math.Max(0.001, _lastRenderDtSeconds):F1}\n\n" +
+                    $"Active Tracks: {_syntheticSource!.ActiveTracks}\n" +
+                    $"Observations: {_syntheticSource.CurrentObservations.Count}\n\n" +
+                    $"Reports: {_reportDirectory}";
+                return;
+            }
+
             DiagnosticsText.Text =
                 $"Scenario: {_scenario.Kind}\n" +
                 $"Targets: {_scenario.Targets.Count}\n\n" +
-                $"Capture FPS: {_aiManager.CaptureFps:F1}\n" +
+                $"Capture FPS: {_aiManager!.CaptureFps:F1}\n" +
                 $"Inference: {_aiManager.InferenceMs:F1} ms\n" +
                 $"Frame Age: {_aiManager.FrameAge:F1} ms\n\n" +
                 $"Players: {_aiManager.PlayerDetections}\n" +
@@ -399,6 +445,7 @@ namespace Aimmy2.TestArena
             _renderTimer.Stop();
             FlushScenarioReport();
             _pointingTelemetry.Dispose();
+            _syntheticSource?.Dispose();
             StopPipeline();
         }
     }

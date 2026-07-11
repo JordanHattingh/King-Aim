@@ -81,13 +81,12 @@ namespace Aimmy2.TestArena
 
         /// <summary>
         /// Whether tracker metrics (identity switches, track losses, reacquisition)
-        /// are gated for this scenario.  Requires direct observation injection for
-        /// synthetic scenarios; currently false for all SyntheticTracking kinds.
+        /// are gated for this scenario.
+        /// SyntheticTracking scenarios inject observations directly into TrackManager
+        /// (YOLO bypassed), so tracker metrics are actionable.
         /// </summary>
         public static bool TrackerMetricsGated(this ScenarioKind kind) =>
-            // TODO: set true when SyntheticTracking scenarios bypass YOLO and inject
-            // synthetic observations directly into TrackManager.
-            false;
+            kind.Domain() == BenchmarkDomain.SyntheticTracking;
     }
 
     public sealed class Scenario
