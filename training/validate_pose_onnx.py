@@ -10,6 +10,8 @@ not guess whether a second sigmoid is appropriate.
 from __future__ import annotations
 
 import argparse
+import csv
+import json
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +35,8 @@ def main() -> None:
     parser.add_argument("--imgsz", type=int, default=512)
     parser.add_argument("--class-count", type=int, default=1)
     parser.add_argument("--keypoint-count", type=int, default=4)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--tolerance", type=float, default=1e-4)
     args = parser.parse_args()
 
     tensor_np = preprocess(Path(args.image), args.imgsz)
@@ -56,8 +60,10 @@ def main() -> None:
         raise SystemExit("Output shape mismatch; validate export/decoder schema before deployment")
 
     absolute = np.abs(pytorch_np - onnx_output)
-    print(f"max_abs_error={absolute.max():.8g}")
-    print(f"mean_abs_error={absolute.mean():.8g}")
+    max_error = float(absolute.max())
+    mean_error = float(absolute.mean())
+    print(f"max_abs_error={max_error:.8g}")
+    print(f"mean_abs_error={mean_error:.8g}")
 
     expected_channels = 4 + args.class_count + args.keypoint_count * 3
     if pytorch_np.ndim != 3 or pytorch_np.shape[1] != expected_channels:
@@ -76,6 +82,22 @@ def main() -> None:
         print("Visibility values are already bounded 0..1 on this export. Keep keypoint_visibility_is_logit=false.")
     else:
         print("Visibility values leave 0..1. Inspect exporter semantics before setting keypoint_visibility_is_logit=true.")
+    report = {
+        "pytorch_shape": list(pytorch_np.shape), "onnx_shape": list(onnx_output.shape),
+        "max_abs_error": max_error, "mean_abs_error": mean_error, "tolerance": args.tolerance,
+        "status": "PASS" if max_error <= args.tolerance else "FAIL",
+        "visibility_min": float(vis.min()), "visibility_max": float(vis.max()),
+    }
+    if args.output_dir:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        (args.output_dir / "pose_parity_report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        with (args.output_dir / "pose_parity_report.csv").open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=report.keys()); writer.writeheader(); writer.writerow(report)
+        (args.output_dir / "pose_parity_summary.txt").write_text(
+            f"status={report['status']}\nmax_abs_error={max_error:.8g}\ntolerance={args.tolerance:.8g}\n", encoding="utf-8"
+        )
+    if max_error > args.tolerance:
+        raise SystemExit(f"Parity failed: max_abs_error {max_error:.8g} > tolerance {args.tolerance:.8g}")
 
 
 if __name__ == "__main__":

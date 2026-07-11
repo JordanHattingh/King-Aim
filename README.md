@@ -1,113 +1,77 @@
+# King Aim
 
-> [!NOTE]
-> If you enjoy Aimmy, please consider giving us a star ⭐! We appreciate it! :)
-  <p>
-    <a href="https://aimmy.dev/" target="_blank">
-      <img width="100%" src="readme_assets/AimmyV2Banner.png"></a>
-  </p>
+King Aim is a Windows accessibility platform for people who need additional visual, haptic, audio, or controlled-pointing support in games. It is derived from Aimmy and retains the upstream attribution and source-available licensing terms in this repository.
 
-Aimmy is a universal AI-Based Aim Alignment Mechanism developed by BabyHamsta, MarsQQ & Taylor to make gaming more accessible for users who have difficulty aiming.
+## Current release
 
-Unlike most AI-Based Aim Alignment Mechanisms, Aimmy utilizes DirectML, ONNX, and YOLOV8 to detect players, offering both higher accuracy and faster performance compared to other Aim Aligners, especially on AMD GPUs, which would not perform well on Aim Alignment Mechanisms that utilize TensorRT.
+Version `2.5.0` is the stable DA1 foundation. It includes calibrated detector confidence, global Hungarian association, timestamped Kalman tracking, GRU-64 motion hints, pose-aware association, short-occlusion prediction, typed coordinate contracts, and immutable `AccessibilityObservation` snapshots.
 
-Aimmy also provides an easy to use user-interface, a wide set of features and customizability options which makes Aimmy a great option for anyone who wants to use and tailor an Aim Alignment Mechanism for a specific game without having to code.
+## Neural architecture
 
-Aimmy is 100% free to use. This means no ads, no key system, and no paywalled features. Aimmy is not, and will never be for sale for the end user, and is considered a source-available product, **not open source** as we actively discourage other developers from making commercial forks of Aimmy.
-
-Please do not confuse Aimmy as an open-source project, we are not, and we have never been one.
-
-Want to connect with us? Join our Discord Server: https://discord.gg/aimmy
-
-If you want to share Aimmy with your friends, our website is: https://aimmy.dev/
-
-## Table of Contents
-- [What is the purpose of Aimmy?](#what-is-the-purpose-of-aimmy)
-- [How does Aimmy Work?](#how-does-aimmy-work)
-- [Features](#features)
-- [Setup](#setup)
-- [How is Aimmy better than similar AI-Based tools?](#how-is-aimmy-better-than-similar-ai-based-tools)
-- [How the hell is Aimmy free?](#how-the-hell-is-aimmy-free)
-- [How do I train my own model?](#how-do-i-train-my-own-model)
-- [How do I upload my model to the "Downloadable Models" menu](ModelUpload.md)
-
-
-
-## What is the purpose of Aimmy?
-### Aimmy was designed for Gamers who are at a severe disadvantage over normal gamers.
-### This includes but is not limited to:
-- Gamers who are physically challenged
-- Gamers who are mentally challenged
-- Gamers who suffer from untreated/untreatable visual impairments
-- Gamers who do not have access to a seperate Human-Interface Device (HID) for controlling the pointer
-- Gamers trying to improve their reaction time
-- Gamers with poor Hand/Eye coordination
-- Gamers who perform poorly in FPS games
-- Gamers who play for long periods in hot environments, causing greasy hands that make aiming difficult 
-
-## How does Aimmy Work?
-```mermaid
-flowchart  LR
-A["Playing Game System"]
-C["Screen Grabbing Functionality"]
-B["YOLOv8 (DirectML + ONNX) Recognition"]
-D{Making Decision}
-DA["X+Y Adjustment"]
-DB["FOV"]
-E["Triggering Functionality"]
-F["Mouse Cursor"]
-
-A --> E--> C  -->  B  --> D --> F 
-DA  -->  D
-DB  -->  D
-
+```text
+screen capture
+  -> YOLO detector / YOLO11-Pose
+  -> confidence calibration
+  -> Hungarian association (IoU + distance + Kalman + optional GRU/pose)
+  -> TrackManager
+  -> AccessibilityObservation
+  -> visual / haptic / audio / optional controlled pointing
 ```
-When you press the trigger binding, Aimmy will capture the screen and run the image through AI recognition powered by your computer hardware. The result it develops will be combined with any adjustment you made in the X and Y axis, and your current FOV and will result in a change in your mouse cursor position.
 
-## Features
-1. Full Fledged UI
-	- Aimmy provides a well designed and full-fledged UI for easy usage and game adjustment.
-2. DirectML + ONNX + YOLOv8 AI Detection Algorithm
-	- The use of these technologies allows Aimmy to be one of the most accurate and fastest Aim Alignment Mechanisms out there in the world
-3. Dynamic Customizability System
-	- Aimmy provides an interactive customizability system with various features that auto-updates the way Aimmy will aim as you customize. From AI Confidence to FOV, Aimmy makes it easy for anyone to tune their aim
-4. Dynamic Visual System
-	- Aimmy contains a universal ESP system that will highlight the player detected by the AI. This is helpful for visually impaired users who have a hard time differentiating enemies, and for configuration creators attempting to debug their configurations.
-5. Mouse Movement Method
-	- Aimmy grants you the right to switch between 5 Mouse Movement Methods depending on your Mouse Type and Game for better Aim Alignment
-6. Hotswappability
-	- Aimmy lets you hotswap models and configurations on the go. There is no need to reset Aimmy to make your changes
-7. Model and Configuration Store with Repository Support
-	- Aimmy makes it easy to get any models and configurations you may ever need, and with repository support, you can get up to date with the latest models and configurations from your favorite creators
+Pose models use one `human` class and four ordered keypoints: `head`, `neck`, `upper_chest`, `hip`. Missing or incompatible model schemas fail closed.
 
-## Setup
-- Download and Install the x64 version of [.NET Runtime 8.0.X.X](https://dotnet.microsoft.com/en-us/download/dotnet/thank-you/runtime-desktop-8.0.2-windows-x64-installer)
-- Download and Install the x64 version of [Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-- Download Aimmy from [Releases](https://github.com/Babyhamsta/Aimmy/releases/latest) (Make sure it's the Aimmy zip and not Source zip)
-- Extract the Aimmy.zip file
-- Run Aimmy.exe
-- Choose your Model and Enjoy :)
+## Build and test
 
-## How is Aimmy better than similar AI-Based tools?
-Aimmy is written in C# using .NET 8 and WPF utilizing pre-existing libraries like DirectML and ONNX. This has allowed us to make a very fast Aim Aligner with high compatiblity on both AMD and NVIDIA GPUs without sacrificing the end-user experience.
+```powershell
+dotnet restore .\Aimmy2.sln
+dotnet build .\Aimmy2.sln -c Release --no-restore
+dotnet test .\Aimmy2.sln -c Release --no-build
+python -m unittest discover -s training/tests -p "test_*.py" -v
+```
 
-<img src="readme_assets/UI.gif" alt="UI Overview" width="400"/>
+The application targets .NET 8 WPF and ONNX Runtime DirectML. GPU model parity remains a local hardware gate; normal builds and contract tests run in Windows CI.
 
-Beyond the core functionality, Aimmy also adds some amazing additional features like Detection ESP to help you tune your gaming experience however you like it.
+## Training foundation
 
-Aimmy comes pre-bundled with a well trained AI model with thousands of images. 
+Initialize the external workspace:
 
-Besides that model, Aimmy provides dozens of other community made models through the store and our Discord server, with more models being developed every day by other Aimmy users. These models vary from game to image count, making Aimmy incredibly versatile and universal for thousands of games on the market right now.
+```powershell
+python training\initialize_training_workspace.py --root C:\KingAimTraining
+```
 
-## How the hell is Aimmy free?
-As an AI based Aim Aligner, Aimmy does not require any sort of upkeep because it does not read any specific game data to perform it's actions. If Aimmy team stops maintaining Aimmy, even if no one pitches in to fork and maintain the project, Aimmy would still work.
+Freeze YOLOv8 epoch 50 without modifying the active run:
 
-This has meant that while we do currently use out of pocket expenses to run Aimmy, those expenses have been low enough that it hasn't been a necessity for Aimmy to run on even an ad-supported model.
+```powershell
+python training\freeze_yolov8_baseline.py --run C:\path\to\run --output C:\KingAimTraining\baseline\yolov8-e050 --dataset C:\path\to\dataset
+```
 
-We do not seek to make money from Aimmy, we only seek your kind words <3, and a chance to help people aim better, by assisting their aim or even to train how they aim (yes, you can use Aimmy in that way too)
+Train one YOLO11-Pose candidate per command:
 
-## How do I train my own model
-Please see the video tutorial below on how to label images and train your own model. (Redirects to Youtube)
-[![Watch the video on Youtube](https://img.youtube.com/vi/i98wF4218-Q/maxresdefault.jpg)](https://youtu.be/i98wF4218-Q)
+```powershell
+python training\train_pose.py --data C:\KingAimTraining\pose\kingaim_pose.yaml --model yolo11n-pose.pt --imgsz 512 --epochs 200 --batch 6 --device 0 --save-period 10 --project C:\KingAimTraining\runs\pose --name kingaim-yolo11n-pose-v1
+```
 
-## How do I upload my model to the "Downloadable Models" menu?
-Please read the tutorial at [UploadModel.md](ModelUpload.md)
+Every accepted image belongs to one source session and one dataset split. Run provenance, duplicate, license, and annotation audits before training.
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Pose annotation handbook](docs/POSE_ANNOTATION_HANDBOOK.md)
+- [Dataset provenance](docs/DATASET_PROVENANCE.md)
+- [Training guide](docs/TRAINING_GUIDE.md)
+- [Validation guide](docs/VALIDATION_GUIDE.md)
+- [Model bundle specification](docs/MODEL_BUNDLE_SPEC.md)
+- [Accessibility outputs](docs/ACCESSIBILITY_OUTPUTS.md)
+
+## Current limits
+
+- YOLOv8 remains the comparison baseline until YOLO11-Pose wins the locked evaluation.
+- Final GRU, calibration, and movement models are not activated until they beat simpler baselines on unseen grouped sessions.
+- DirectML performance and parity require the target Windows GPU.
+- Controlled pointing is optional, separately enabled, bounded, stale-observation rejecting, and manually overridable.
+
+## Privacy and data
+
+Training media and generated datasets live outside the repository by default. Source media, permissions, provenance, session identity, hashes, and split assignments remain together. No frame from one match or creator clip may cross train, validation, and test splits.
+
+See [LICENSE](LICENSE) and [SourceAvailable.md](SourceAvailable.md) for repository terms.

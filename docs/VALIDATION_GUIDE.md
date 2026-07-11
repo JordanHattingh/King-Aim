@@ -1,0 +1,7 @@
+# Validation Guide
+
+Source gates are Release build with zero warnings and errors, all .NET tests, all Python tests, Python syntax, and diff integrity. Dataset gates are provenance completeness, approved usage basis, exact and near-duplicate review, four-keypoint annotation audit, and session leakage audit.
+
+Model selection compares YOLOv8 epoch 50, YOLOv8 best, YOLO11n-Pose best, and YOLO11s-Pose best on locked images. Measure accuracy and P50/P95/P99 latency. Pose exports additionally require raw PyTorch versus ONNX parity and DirectML/C# decoder verification on the target Windows GPU.
+
+No GRU, calibration, or movement model becomes production-critical until it beats its simpler baseline on unseen grouped sessions.
