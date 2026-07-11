@@ -393,3 +393,6 @@ training/logs/
 training/output/
 training/outputs/
 training/checkpoints/
+
+# Loose model artifacts — canonical copies live under C:\KingAimTraining\baseline\
+/kingaim-yolov8-baseline-e050-fp32.onnx

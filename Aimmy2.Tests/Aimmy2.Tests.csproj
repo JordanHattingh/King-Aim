@@ -10,10 +10,13 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
-  <!-- Copy DirectML native binaries so the DirectML gate test can load the provider. -->
+  <!-- PlatformTarget=x64 causes Microsoft.AI.DirectML.targets to resolve
+       Microsoft_AI_DirectML_Bin_Dir_Target and copy DirectML.dll to output.
+       Without an explicit x64 target the property stays empty and the copy
+       is silently skipped (the package targets only fire for known platforms). -->
   <PropertyGroup>
+    <PlatformTarget>x64</PlatformTarget>
     <Microsoft_AI_DirectML_SkipDebugLayerCopy>True</Microsoft_AI_DirectML_SkipDebugLayerCopy>
-    <Microsoft_AI_DirectML_SkipLibraryCopy>False</Microsoft_AI_DirectML_SkipLibraryCopy>
   </PropertyGroup>
 
   <ItemGroup>
