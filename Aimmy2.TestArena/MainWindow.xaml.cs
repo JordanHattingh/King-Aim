@@ -34,9 +34,10 @@ namespace Aimmy2.TestArena
             "KingAim", "TestArenaReports");
         private ScenarioMetricsRecorder? _metricsRecorder;
         private readonly Queue<ScenarioKind> _reportQueue = new();
-        private DateTime? _reportScenarioEndsAt;
         private bool _runningAllReports;
-        private static readonly TimeSpan AutomatedScenarioDuration = TimeSpan.FromSeconds(10);
+        private readonly FixedSimulationClock _simulationClock = new();
+        private const int ScenarioDurationSeconds = 10;
+        private const int ScenarioDurationFrames = ScenarioDurationSeconds * FixedSimulationClock.FrequencyHz;
 
         public MainWindow()
         {
@@ -112,6 +113,7 @@ namespace Aimmy2.TestArena
         private void RebuildScenario(ScenarioKind kind)
         {
             FlushScenarioReport();
+            _simulationClock.Reset();
             foreach (var visual in _visuals.Values)
             {
                 ArenaCanvas.Children.Remove(visual.Rect);
@@ -189,18 +191,21 @@ namespace Aimmy2.TestArena
 
         private void RenderTimer_Tick(object? sender, EventArgs e)
         {
-            var now = DateTime.UtcNow;
-            double dt = Math.Clamp((now - _lastTick).TotalSeconds, 0, 0.1);
-            _lastTick = now;
-            _lastRenderDtSeconds = dt > 0 ? dt : _lastRenderDtSeconds;
+            DateTime renderNow = DateTime.UtcNow;
+            double renderDt = Math.Clamp((renderNow - _lastTick).TotalSeconds, 0, 0.1);
+            _lastTick = renderNow;
+            _lastRenderDtSeconds = renderDt > 0 ? renderDt : _lastRenderDtSeconds;
 
-            _scenario.Advance(dt);
+            bool fixedStep = _scenario.Kind.Domain() == BenchmarkDomain.SyntheticTracking;
+            DateTime frameTimestamp = fixedStep ? _simulationClock.Advance() : renderNow;
+            double simulationDt = fixedStep ? _simulationClock.DeltaSeconds : renderDt;
+            _scenario.Advance(simulationDt);
 
             if (_syntheticSource != null && ArenaCanvas.ActualWidth > 0)
             {
                 _syntheticSource.Inject(
                     _scenario.Targets,
-                    now,
+                    frameTimestamp,
                     p => { var s = ArenaCanvas.PointToScreen(p); return new System.Drawing.PointF((float)s.X, (float)s.Y); },
                     DisplayManager.ScreenLeft,
                     DisplayManager.ScreenTop,
@@ -226,8 +231,8 @@ namespace Aimmy2.TestArena
             }
 
             PublishPointingTelemetry();
-            RecordScenarioMetrics(now);
-            AdvanceAutomatedReports(now);
+            RecordScenarioMetrics(frameTimestamp, fixedStep ? FixedSimulationClock.FrequencyHz : null);
+            AdvanceAutomatedReports();
             UpdateDiagnostics();
         }
 
@@ -246,9 +251,9 @@ namespace Aimmy2.TestArena
             RunNextAutomatedScenario();
         }
 
-        private void AdvanceAutomatedReports(DateTime now)
+        private void AdvanceAutomatedReports()
         {
-            if (_runningAllReports && _reportScenarioEndsAt is DateTime endsAt && now >= endsAt)
+            if (_runningAllReports && _simulationClock.FrameIndex >= ScenarioDurationFrames)
             {
                 FlushScenarioReport();
                 RunNextAutomatedScenario();
@@ -260,7 +265,6 @@ namespace Aimmy2.TestArena
             if (!_reportQueue.TryDequeue(out ScenarioKind kind))
             {
                 _runningAllReports = false;
-                _reportScenarioEndsAt = null;
                 ReportStatusLabel.Text = $"Complete: {_reportDirectory}";
                 return;
             }
@@ -269,11 +273,10 @@ namespace Aimmy2.TestArena
                 ScenarioComboBox.SelectedItem = kind;
             else
                 RebuildScenario(kind);
-            _reportScenarioEndsAt = DateTime.UtcNow + AutomatedScenarioDuration;
             ReportStatusLabel.Text = $"Recording {kind} ({_reportQueue.Count + 1} remaining)";
         }
 
-        private void RecordScenarioMetrics(DateTime timestamp)
+        private void RecordScenarioMetrics(DateTime timestamp, double? simulationFps = null)
         {
             if (_metricsRecorder == null || ArenaCanvas.ActualWidth <= 0)
                 return;
@@ -306,8 +309,9 @@ namespace Aimmy2.TestArena
 
             double inferenceMs = _aiManager?.InferenceMs ?? 0.0;
             double frameAgeMs = _aiManager?.FrameAge ?? 0.0;
-            double captureFps = _aiManager?.CaptureFps ?? (1.0 / Math.Max(0.001, _lastRenderDtSeconds));
-            _metricsRecorder.Record(timestamp, targets, detections, inferenceMs, frameAgeMs, captureFps);
+            double captureFps = simulationFps ?? _aiManager?.CaptureFps ?? (1.0 / Math.Max(0.001, _lastRenderDtSeconds));
+            _metricsRecorder.Record(timestamp, targets, detections, inferenceMs, frameAgeMs, captureFps,
+                renderFps: 1.0 / Math.Max(0.001, _lastRenderDtSeconds));
         }
 
         private void FlushScenarioReport()

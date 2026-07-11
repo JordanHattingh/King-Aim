@@ -35,6 +35,14 @@ public sealed record ScenarioMetricsSummary(
     bool   DetectorExecuted,
     bool   DetectorMetricsGated,
     bool   TrackerMetricsGated,
+    string ClockMode,
+    int    SimulationHz,
+    int    SimulationFrames,
+    double SimulationDurationSeconds,
+    DateTime SimulationStartUtc,
+    DateTime SimulationEndUtc,
+    double RealElapsedMs,
+    double RenderFpsP50,
     // Injection configuration (populated for SyntheticTracking; "N/A" / 0 for GameplayReplay).
     string NoiseProfile,
     bool   InferenceMetricsApplicable,
@@ -122,6 +130,8 @@ public sealed class ScenarioMetricsRecorder
     private readonly List<double> _inferenceMs = new();
     private readonly List<double> _frameAgeMs = new();
     private readonly List<double> _captureFps = new();
+    private readonly List<double> _renderFps = new();
+    private readonly DateTime _realStartedAt = DateTime.UtcNow;
     private int _frames;
     private int _detections;
     private int _falsePositives;
@@ -207,7 +217,8 @@ public sealed class ScenarioMetricsRecorder
         IReadOnlyList<ArenaDetection> detections,
         double inferenceMs,
         double frameAgeMs,
-        double captureFps)
+        double captureFps,
+        double? renderFps = null)
     {
         _frames++;
         _detections += detections.Count;
@@ -217,6 +228,7 @@ public sealed class ScenarioMetricsRecorder
             AddFinite(_frameAgeMs, frameAgeMs);
         }
         AddFinite(_captureFps, captureFps);
+        if (renderFps.HasValue) AddFinite(_renderFps, renderFps.Value);
         foreach (ArenaDetection detection in detections)
             AddFinite(_observationAges, detection.ObservationAgeMs);
 
@@ -568,6 +580,14 @@ public sealed class ScenarioMetricsRecorder
         _detectorExecuted,
         _detectorMetricsGated,
         _trackerMetricsGated,
+        ClockMode:                         _domain == BenchmarkDomain.SyntheticTracking ? "FixedStep" : "WallClock",
+        SimulationHz:                      _domain == BenchmarkDomain.SyntheticTracking ? FixedSimulationClock.FrequencyHz : 0,
+        SimulationFrames:                  _domain == BenchmarkDomain.SyntheticTracking ? _frames : 0,
+        SimulationDurationSeconds:         _domain == BenchmarkDomain.SyntheticTracking ? (double)_frames / FixedSimulationClock.FrequencyHz : 0,
+        SimulationStartUtc:                _domain == BenchmarkDomain.SyntheticTracking ? FixedSimulationClock.EpochUtc : default,
+        SimulationEndUtc:                  _domain == BenchmarkDomain.SyntheticTracking ? FixedSimulationClock.EpochUtc.AddTicks((long)_frames * TimeSpan.TicksPerSecond / FixedSimulationClock.FrequencyHz) : default,
+        RealElapsedMs:                     Math.Max(0, (DateTime.UtcNow - _realStartedAt).TotalMilliseconds),
+        RenderFpsP50:                      Percentile(_renderFps, 0.50),
         NoiseProfile:                      _noiseConfig?.ProfileName ?? "N/A",
         InferenceMetricsApplicable:        _detectorExecuted,
         RandomSeed:                        _noiseConfig?.Seed ?? 0,

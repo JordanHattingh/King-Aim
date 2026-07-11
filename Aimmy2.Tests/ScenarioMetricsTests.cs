@@ -9,6 +9,21 @@ namespace Aimmy2.Tests;
 public sealed class ScenarioMetricsTests
 {
     [Fact]
+    public void FixedSimulationClock_UsesExactRationalFrameTimeAndResets()
+    {
+        var clock = new FixedSimulationClock();
+        Assert.Equal(FixedSimulationClock.EpochUtc, clock.CurrentTimestamp);
+        Assert.True(clock.Advance() > FixedSimulationClock.EpochUtc);
+        while (clock.FrameIndex < 60) clock.Advance();
+        Assert.Equal(FixedSimulationClock.EpochUtc.AddSeconds(1), clock.CurrentTimestamp);
+        while (clock.FrameIndex < 600) clock.Advance();
+        Assert.Equal(FixedSimulationClock.EpochUtc.AddSeconds(10), clock.CurrentTimestamp);
+        clock.Reset();
+        Assert.Equal(0, clock.FrameIndex);
+        Assert.Equal(FixedSimulationClock.EpochUtc, clock.CurrentTimestamp);
+    }
+
+    [Fact]
     public void SyntheticProfiles_MapToNamedDeterministicConfigurations()
     {
         foreach (SyntheticProfile profile in Enum.GetValues<SyntheticProfile>())
