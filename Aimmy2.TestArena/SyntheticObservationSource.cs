@@ -49,6 +49,13 @@ namespace Aimmy2.TestArena
 
         public int ActiveTracks { get; private set; }
 
+        /// <summary>Forwarded to TrackManager for sweep experiments. 1.0 = full raw measurement anchor.</summary>
+        public float RawVelocityMeasurementWeight
+        {
+            get => _trackManager.RawVelocityMeasurementWeight;
+            set => _trackManager.RawVelocityMeasurementWeight = value;
+        }
+
         /// <summary>Last injected box size in physical screen pixels, for diagnostics.</summary>
         public (float Width, float Height) LastInjectedBoxSize { get; private set; }
 

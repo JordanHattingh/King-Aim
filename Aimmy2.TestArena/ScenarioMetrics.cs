@@ -46,6 +46,10 @@ public sealed record ScenarioMetricsSummary(
     string RunId,
     int    Repetition,
     string GitCommit,
+    // Tracker experiment configuration (populated for sweep runs; empty/0 for baseline runs).
+    string PredictorMode,
+    float  AssociationPredictionBlend,
+    string WorkingTreeDiffHash,
     double RealElapsedMs,
     double RenderFpsP50,
     // Injection configuration (populated for SyntheticTracking; "N/A" / 0 for GameplayReplay).
@@ -200,6 +204,12 @@ public sealed class ScenarioMetricsRecorder
     public int Repetition { get; set; } = 0;
     /// <summary>Short git commit hash stamped into the report for traceability.</summary>
     public string GitCommit { get; set; } = string.Empty;
+    /// <summary>Tracker predictor mode label (e.g. "RawVelocityAnchor"); empty for baseline.</summary>
+    public string PredictorMode { get; set; } = string.Empty;
+    /// <summary>Blend weight between raw and smoothed measurement used for velocity sampling (0=full smooth, 1=full raw).</summary>
+    public float AssociationPredictionBlend { get; set; } = 0f;
+    /// <summary>SHA-256 of `git diff --binary` at run time; identifies uncommitted experiment state.</summary>
+    public string WorkingTreeDiffHash { get; set; } = string.Empty;
 
     public ScenarioMetricsRecorder(
         string scenario,
@@ -601,6 +611,9 @@ public sealed class ScenarioMetricsRecorder
         RunId:                             RunId,
         Repetition:                        Repetition,
         GitCommit:                         GitCommit,
+        PredictorMode:                     PredictorMode,
+        AssociationPredictionBlend:        AssociationPredictionBlend,
+        WorkingTreeDiffHash:               WorkingTreeDiffHash,
         RealElapsedMs:                     Math.Max(0, (DateTime.UtcNow - _realStartedAt).TotalMilliseconds),
         RenderFpsP50:                      Percentile(_renderFps, 0.50),
         NoiseProfile:                      _noiseConfig?.ProfileName ?? "N/A",
@@ -863,6 +876,8 @@ public static class ScenarioReportWriter
             s.Scenario,
             s.NoiseProfile,
             s.RandomSeed,
+            s.PredictorMode,
+            AssociationPredictionBlend = Math.Round(s.AssociationPredictionBlend, 6),
             s.SimulationFrames,
             s.DetectionCount,
             s.FalsePositives,

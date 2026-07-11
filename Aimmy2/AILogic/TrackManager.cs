@@ -72,6 +72,7 @@ namespace Aimmy2.AILogic
         /// <summary>First-order velocity filter response rate in 1/seconds.</summary>
         public float VelocityResponseRatePerSecond { get; set; } = 12f;
         public double MinimumVelocitySampleSeconds { get; set; } = 1.0 / 120.0;
+        public float RawVelocityMeasurementWeight { get; set; } = 0.9f;
         public long VelocityUpdatesAccepted { get; private set; }
         public long VelocityUpdatesSkippedSubFrame { get; private set; }
         public double MinimumObservedUpdateIntervalMs { get; private set; } = double.PositiveInfinity;
@@ -213,6 +214,10 @@ namespace Aimmy2.AILogic
                 timestamp: frameTime,
                 applyLead: false);
             PointF smoothedCenter = new(smoothedDetection.X, smoothedDetection.Y);
+            float rawWeight = Math.Clamp(RawVelocityMeasurementWeight, 0f, 1f);
+            PointF velocitySampleCenter = new(
+                smoothedCenter.X + (newCenter.X - smoothedCenter.X) * rawWeight,
+                smoothedCenter.Y + (newCenter.Y - smoothedCenter.Y) * rawWeight);
 
             double velocityDt = track.HasVelocitySample
                 ? (frameTime - track.LastVelocitySampleTimestamp).TotalSeconds
@@ -223,7 +228,7 @@ namespace Aimmy2.AILogic
 
             if (!track.HasVelocitySample)
             {
-                track.LastVelocitySampleCenter = smoothedCenter;
+                track.LastVelocitySampleCenter = velocitySampleCenter;
                 track.LastVelocitySampleTimestamp = frameTime;
                 track.HasVelocitySample = true;
             }
@@ -232,8 +237,8 @@ namespace Aimmy2.AILogic
                 float stableDt = (float)Math.Min(velocityDt, 0.1);
                 float sw = Math.Max(ScreenWidth, 1);
                 float sh = Math.Max(ScreenHeight, 1);
-                float measuredVx = ((smoothedCenter.X - track.LastVelocitySampleCenter.X) / sw) / stableDt;
-                float measuredVy = ((smoothedCenter.Y - track.LastVelocitySampleCenter.Y) / sh) / stableDt;
+                float measuredVx = ((velocitySampleCenter.X - track.LastVelocitySampleCenter.X) / sw) / stableDt;
+                float measuredVy = ((velocitySampleCenter.Y - track.LastVelocitySampleCenter.Y) / sh) / stableDt;
 
                 if (!float.IsFinite(measuredVx) || !float.IsFinite(measuredVy))
                 {
@@ -250,7 +255,7 @@ namespace Aimmy2.AILogic
                 if (!float.IsFinite(track.Velocity.X) || !float.IsFinite(track.Velocity.Y))
                     track.Velocity = PointF.Empty;
 
-                track.LastVelocitySampleCenter = smoothedCenter;
+                track.LastVelocitySampleCenter = velocitySampleCenter;
                 track.LastVelocitySampleTimestamp = frameTime;
                 VelocityUpdatesAccepted++;
                 MaximumAcceptedVelocityMagnitude = Math.Max(MaximumAcceptedVelocityMagnitude,

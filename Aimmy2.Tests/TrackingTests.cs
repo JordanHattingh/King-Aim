@@ -137,6 +137,37 @@ namespace Aimmy2.Tests
         }
 
         [Fact]
+        public void VelocitySampling_DirectionReversalCorrectsWithoutGateExcursion()
+        {
+            var manager = new TrackManager { ScreenWidth = 1920, ScreenHeight = 1080 };
+            DateTime now = DateTime.UtcNow;
+            Track track = manager.Update([MakePrediction(0, "enemy", 900, 100)], ClassRoles, now).Single();
+            for (int i = 1; i <= 4; i++)
+                track = manager.Update([MakePrediction(0, "enemy", 900 + i * 35, 100)], ClassRoles, now.AddMilliseconds(i * 16.67)).Single();
+
+            for (int i = 5; i <= 8; i++)
+            {
+                float expectedX = 1040 - (i - 4) * 35;
+                track = manager.Update([MakePrediction(0, "enemy", expectedX, 100)], ClassRoles, now.AddMilliseconds(i * 16.67)).Single();
+                Assert.InRange(Math.Abs(track.CenterDesktop.X - (expectedX + 20)), 0, 120);
+            }
+        }
+
+        [Fact]
+        public void VelocitySampling_HighSpeedDropExtrapolatesInsidePositionGate()
+        {
+            var manager = new TrackManager { ScreenWidth = 1920, ScreenHeight = 1080 };
+            DateTime now = DateTime.UtcNow;
+            Track track = manager.Update([MakePrediction(0, "enemy", 100, 100)], ClassRoles, now).Single();
+            for (int i = 1; i <= 5; i++)
+                track = manager.Update([MakePrediction(0, "enemy", 100 + i * 45, 100)], ClassRoles, now.AddMilliseconds(i * 16.67)).Single();
+
+            float expectedCenterX = 100 + 6 * 45 + 20;
+            track = manager.Update([], ClassRoles, now.AddMilliseconds(6 * 16.67)).Single();
+            Assert.InRange(Math.Abs(track.CenterDesktop.X - expectedCenterX), 0, 120);
+        }
+
+        [Fact]
         public void EnemyOnly_NeverSelectsFriendly()
         {
             var manager = new TrackManager();
