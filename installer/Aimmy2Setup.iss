@@ -9,7 +9,7 @@
 ;   3. Compile this script with ISCC (Inno Setup 6+)
 
 #define MyAppName "King Aim"
-#define MyAppVersion "2.1.0"
+#define MyAppVersion "2.5.0"
 #define MyAppPublisher "King Aim"
 #define MyAppExeName "YmmiaV2.exe"
 #define PublishDir "..\publish\Aimmy2"
