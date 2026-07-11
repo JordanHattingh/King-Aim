@@ -161,12 +161,40 @@ class DetectorValidationToolTests(unittest.TestCase):
         self.assertFalse(result["by_threshold"]["0.25"]["count_match"])
 
     def test_semantic_parity_large_center_shift_fails(self) -> None:
-        # Same detection count but centre shifted by >0.25px.
+        # A 10px centre shift makes the boxes non-overlapping enough that IoU < 0.999,
+        # so geometric matching rejects the pair on IoU (not centre_diff).
         pt = self._make_raw(detections=[(100.0, 100.0, 40.0, 60.0, 0.9)])
-        onnx = self._make_raw(detections=[(100.5, 100.5, 40.0, 60.0, 0.9)])
+        onnx = self._make_raw(detections=[(110.0, 110.0, 40.0, 60.0, 0.9)])
         result = semantic_parity_case("shifted", pt, onnx, conf_thresholds=(0.25,))
         self.assertFalse(result["passed"])
-        self.assertGreater(result["by_threshold"]["0.25"]["center_diff_max_px"], 0.25)
+        # Matching fails due to IoU below 0.999 (large shift → low IoU)
+        t = result["by_threshold"]["0.25"]
+        self.assertIsNotNone(t["box_iou_min"])
+        self.assertLess(t["box_iou_min"], 0.999)
+
+    def test_semantic_parity_order_swap_still_passes(self) -> None:
+        # Two detections whose confidence ordering swaps between PyTorch and ONNX.
+        # PyTorch: A(conf=0.9005) > B(conf=0.9000)  → sorted [A, B]
+        # ONNX:    B(conf=0.9004) > A(conf=0.9001)  → sorted [B, A]
+        # Conf diffs: A=0.0004, B=0.0004 — both within 0.001 tolerance.
+        # Positional matching would compare A↔B and B↔A (large centre diff → FAIL).
+        # Geometric matching should correctly pair A↔A and B↔B.
+        pt = self._make_raw(
+            n_anchors=30,
+            detections=[
+                (50.0, 50.0, 20.0, 30.0, 0.9005),    # detection A
+                (300.0, 300.0, 20.0, 30.0, 0.9000),   # detection B
+            ],
+        )
+        onnx = self._make_raw(
+            n_anchors=30,
+            detections=[
+                (300.001, 300.001, 20.0, 30.0, 0.9004),  # B has higher conf in ONNX
+                (50.001, 50.001, 20.0, 30.0, 0.9001),    # A has lower conf in ONNX
+            ],
+        )
+        result = semantic_parity_case("swapped", pt, onnx, conf_thresholds=(0.25,))
+        self.assertTrue(result["passed"], msg=f"Geometric matching should handle order swap: {result}")
 
 
 if __name__ == "__main__":

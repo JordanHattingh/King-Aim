@@ -238,17 +238,43 @@ def semantic_parity_case(
             conf_diff_max = None
             threshold_passed = True
         else:
-            n = pt_n
-            pt_cx = (pt_boxes[:n, 0] + pt_boxes[:n, 2]) / 2
-            pt_cy = (pt_boxes[:n, 1] + pt_boxes[:n, 3]) / 2
-            onnx_cx = (onnx_boxes[:n, 0] + onnx_boxes[:n, 2]) / 2
-            onnx_cy = (onnx_boxes[:n, 1] + onnx_boxes[:n, 3]) / 2
-            center_diff_max_px = float(np.hypot(pt_cx - onnx_cx, pt_cy - onnx_cy).max())
-            conf_diff_max = float(np.abs(pt_scores[:n] - onnx_scores[:n]).max())
-            iou_matrix = _box_iou_batch(pt_boxes[:n], onnx_boxes[:n])
-            box_iou_min = float(np.diag(iou_matrix).min())
+            # One-to-one geometric matching: greedily pair each PyTorch detection
+            # with the unused ONNX detection that has the highest IoU.  This is
+            # robust to confidence-ordering swaps (e.g. two detections with nearly
+            # equal scores whose sort order differs between PyTorch and ONNX).
+            iou_matrix = _box_iou_batch(pt_boxes, onnx_boxes)   # [pt_n, onnx_n]
+            matched_iou: list[float] = []
+            matched_center_diff: list[float] = []
+            matched_conf_diff: list[float] = []
+            used_onnx: set[int] = set()
+            all_matched = True
+            for pt_i in range(pt_n):
+                best_j = -1
+                best_iou = -1.0
+                for onnx_j in range(onnx_n):
+                    if onnx_j in used_onnx:
+                        continue
+                    if iou_matrix[pt_i, onnx_j] > best_iou:
+                        best_iou = iou_matrix[pt_i, onnx_j]
+                        best_j = onnx_j
+                if best_j < 0 or best_iou < min_box_iou:
+                    all_matched = False
+                    matched_iou.append(best_iou if best_j >= 0 else 0.0)
+                    break
+                used_onnx.add(best_j)
+                matched_iou.append(best_iou)
+                pt_cx_i = (pt_boxes[pt_i, 0] + pt_boxes[pt_i, 2]) / 2
+                pt_cy_i = (pt_boxes[pt_i, 1] + pt_boxes[pt_i, 3]) / 2
+                onnx_cx_j = (onnx_boxes[best_j, 0] + onnx_boxes[best_j, 2]) / 2
+                onnx_cy_j = (onnx_boxes[best_j, 1] + onnx_boxes[best_j, 3]) / 2
+                matched_center_diff.append(float(np.hypot(pt_cx_i - onnx_cx_j, pt_cy_i - onnx_cy_j)))
+                matched_conf_diff.append(float(abs(float(pt_scores[pt_i]) - float(onnx_scores[best_j]))))
+            box_iou_min = float(min(matched_iou)) if matched_iou else 0.0
+            center_diff_max_px = float(max(matched_center_diff)) if matched_center_diff else 0.0
+            conf_diff_max = float(max(matched_conf_diff)) if matched_conf_diff else 0.0
             threshold_passed = (
-                box_iou_min >= min_box_iou
+                all_matched
+                and box_iou_min >= min_box_iou
                 and center_diff_max_px <= max_center_diff_px
                 and conf_diff_max <= max_conf_diff
             )
@@ -454,11 +480,12 @@ def main() -> int:
 
         if semantic_passed and raw_passed:
             overall_status = "PASS"
-            note = "Deployment semantic and raw parity both pass."
+            note = "Deployment semantic parity PASS (detections semantically equivalent within tolerances) and raw numerical parity PASS."
         elif semantic_passed and not raw_passed:
             overall_status = "WARN"
             note = (
-                "Deployment semantic parity PASS: final detections are identical. "
+                "Deployment semantic parity PASS: final detections are semantically equivalent "
+                "within configured tolerances (IoU, centre, confidence). "
                 f"Raw numerical tolerance FAIL: {deployment_raw['cases_exceeding_tolerance']}. "
                 "Sub-threshold numerical difference does not affect NMS decisions."
             )
