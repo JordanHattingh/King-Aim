@@ -63,19 +63,38 @@ public sealed record ScenarioMetricsSummary(
     double FrameAgeP95Ms,
     double CaptureFpsP50,
     // Occlusion-specific metrics (non-zero only for scenarios with Visible=false phases).
-    // FalsePositives during expected occlusion are not counted here; they are bucketed below.
     int    OcclusionFrames,
-    int    TrackPresentDuringOcclusionFrames,
-    int    GhostFramesAfterPersistenceWindow,
-    bool   TrackIdPreservedAfterOcclusion,
+    // FP classification during occlusion:
+    //   ExpectedOcclusionPersistenceFrames — old track extrapolating within MaxLostSeconds; NOT an FP.
+    //   GhostAfterPersistenceDeadline      — old track still emitted after MaxLostSeconds; IS an FP.
+    //   DuplicateAfterReappearance         — old track emitted alongside new track after reappearance; IS an FP.
+    //   UnrelatedFalsePositive             — detection unrelated to any occlusion lifecycle event; IS an FP.
+    int    ExpectedOcclusionPersistenceFrames,
+    int    GhostAfterPersistenceDeadline,
+    int    DuplicateAfterReappearance,
+    int    UnrelatedFalsePositive,
     // Occlusion transition diagnostics.
+    bool   TrackIdPreservedAfterOcclusion,
+    // OldTrackExpiredByDeadline: true when the gap exceeded MaxLostSeconds, meaning a new track
+    // on reappearance is an expected lifecycle event, not a tracker failure.
+    bool   OldTrackExpiredByDeadline,
     int    OldTrackIdAtOcclusionStart,
     int    NewTrackIdAtFirstReappearance,
-    int    ReacquisitionFrameCount,
-    int    SpuriousFPDuringOcclusion,
-    // Ambiguity-specific metrics (non-zero only for multi-target scenarios with convergence).
-    int    AmbiguousIdentityFrames,
+    // Identity-switch classification.
+    //   IdentitySwitches                        — total raw count (includes ambiguous).
+    //   IdentitySwitchesOutsideAmbiguity        — raw count outside ambiguous frames.
+    //   ExpectedTrackReinitializations          — new ID after confirmed expiry; not a tracker failure.
+    //   UnexpectedIdentitySwitchesOutsideAmbiguity — true ID swap (not expiry-driven); gated failure.
     int    IdentitySwitchesOutsideAmbiguity,
+    int    ExpectedTrackReinitializations,
+    int    UnexpectedIdentitySwitchesOutsideAmbiguity,
+    // Ambiguity tracking.
+    int    AmbiguousIdentityFrames,
+    // Per-cycle occlusion aggregates (meaningful for scenarios with repeated occlusion).
+    int    OcclusionCycleCount,
+    int    SuccessfulReacquisitions,
+    int    FailedReacquisitions,
+    int    MaxReacquisitionFrames,
     // Identity-switch trace diagnostics.
     int    SwitchTracesWritten);
 
@@ -103,25 +122,38 @@ public sealed class ScenarioMetricsRecorder
     private int _misses;
     private int _identitySwitches;
     private int _trackLosses;
-    // Occlusion tracking
+    // Occlusion tracking.
     private int _occlusionFrames;
-    private int _trackPresentDuringOcclusion;
-    private int _ghostFramesAfterWindow;
     private bool _trackIdPreservedAfterOcclusion = true;
     private bool _wasOccluded;
     // Allowed persistence window (matches TrackManager.MaxLostSeconds default).
     private const double OcclusionPersistenceWindowSeconds = 0.6;
+    private const double OcclusionPersistenceWindowMs      = OcclusionPersistenceWindowSeconds * 1000.0;
     private DateTime? _occlusionStartedAt;
-    // Occlusion transition state — corrected ID tracking using an explicit state machine.
-    private int? _trackIdAtOcclusionStart;          // frozen when target first becomes hidden
-    private int? _firstTrackIdAfterOcclusion;       // set on first match after reappearance
-    private bool _awaitingFirstReappearanceMatch;   // true from hidden→visible until first match
-    private bool _countingReacquisitionFrames;      // true from reappearance until first match
-    private int _reacquisitionFrameCount;           // visible frames before first post-occlusion match
-    private int _spuriousFPDuringOcclusion;         // FP not near any hidden target during occlusion
-    // Ambiguity tracking
-    private int _ambiguousIdentityFrames;
+    // Occlusion transition state.
+    private int? _trackIdAtOcclusionStart;         // frozen when target first becomes hidden
+    private int? _firstTrackIdAfterOcclusion;      // set on first match after reappearance
+    private bool _awaitingFirstReappearanceMatch;  // true from hidden→visible until first match
+    private bool _countingReacquisitionFrames;     // true from reappearance until first match
+    private bool _oldTrackExpiredByDeadline;       // gap exceeded window → new ID is expected lifecycle
+    private DateTime? _reappearanceTimestamp;      // when target last became visible (duplicate window)
+    // FP buckets (replaces position-based SpuriousFPDuringOcclusion).
+    private int _expectedOcclusionPersistenceFrames;
+    private int _ghostAfterPersistenceDeadline;
+    private int _duplicateAfterReappearance;
+    private int _unrelatedFalsePositive;
+    // IS classification.
     private int _identitySwitchesOutsideAmbiguity;
+    private int _expectedTrackReinitializations;
+    private int _unexpectedIdentitySwitchesOutsideAmbiguity;
+    // Ambiguity tracking.
+    private int _ambiguousIdentityFrames;
+    // Per-cycle occlusion aggregates.
+    private int _occlusionCycleCount;
+    private int _successfulReacquisitions;
+    private int _failedReacquisitions;
+    private int _currentCycleReacqFrames;
+    private int _maxReacquisitionFrames;
     // Switch trace — ring buffer of recent frames for post-hoc CSV diagnostics.
     private const int SwitchWindowBefore = 10;
     private const int SwitchWindowAfter  = 10;
@@ -163,8 +195,6 @@ public sealed class ScenarioMetricsRecorder
     {
         _frames++;
         _detections += detections.Count;
-        // Only accumulate inference/frameAge when the detector actually ran.
-        // For SyntheticTracking injection, these values are meaningless (always 0).
         if (_detectorExecuted)
         {
             AddFinite(_inferenceMs, inferenceMs);
@@ -174,27 +204,30 @@ public sealed class ScenarioMetricsRecorder
         foreach (ArenaDetection detection in detections)
             AddFinite(_observationAges, detection.ObservationAgeMs);
 
-        ArenaGroundTruth[] visibleTargets   = targets.Where(t => t.Visible).ToArray();
+        ArenaGroundTruth[] visibleTargets   = targets.Where(t =>  t.Visible).ToArray();
         ArenaGroundTruth[] invisibleTargets = targets.Where(t => !t.Visible).ToArray();
 
-        // ── Occlusion bookkeeping ──────────────────────────────────────────────
-        // Track when the scenario deliberately hides a target (Visible=false) so we
-        // can distinguish a persisted/extrapolated track (correct) from a ghost track
-        // that outlives the allowed persistence window (failure).
-        //
-        // ID tracking uses an explicit state machine rather than always overwriting
-        // _trackIdBeforeOcclusion — overwriting on every match would record the ID
-        // from the last visible frame before occlusion ended, not the frame it began.
+        // ── Occlusion state transitions ────────────────────────────────────────
         bool prevWasOccluded = _wasOccluded;
-        bool anyInvisible = invisibleTargets.Length > 0;
+        bool anyInvisible    = invisibleTargets.Length > 0;
 
         if (anyInvisible)
         {
             _occlusionFrames++;
-            _occlusionStartedAt ??= timestamp;
             if (!prevWasOccluded)
             {
-                // Entering occlusion: freeze the current track IDs.
+                // Entering a new occlusion cycle.
+                _occlusionCycleCount++;
+                // If the previous cycle's reappearance was never matched before a new
+                // occlusion started, that cycle was a failed reacquisition.
+                if (_awaitingFirstReappearanceMatch)
+                    _failedReacquisitions++;
+
+                _occlusionStartedAt       = timestamp;
+                _oldTrackExpiredByDeadline = false;
+                _currentCycleReacqFrames  = 0;
+
+                // Freeze the current track ID for the target going invisible.
                 _trackIdAtOcclusionStart = null;
                 foreach (ArenaGroundTruth t in invisibleTargets)
                     if (_lastTrackByTarget.TryGetValue(t.Id, out int id))
@@ -204,17 +237,25 @@ public sealed class ScenarioMetricsRecorder
         }
         else if (prevWasOccluded)
         {
-            // Exiting occlusion: arm the reappearance watcher.
-            _wasOccluded = false;
-            _occlusionStartedAt = null;
+            // Exiting occlusion.
+            _wasOccluded           = false;
+            _reappearanceTimestamp = timestamp;
+
+            // If the gap exceeded the persistence window, the old track must have expired
+            // before the target reappeared. A new ID on reappearance is an expected lifecycle
+            // event, not a tracker failure.
+            if (_occlusionStartedAt.HasValue &&
+                (timestamp - _occlusionStartedAt.Value).TotalSeconds > OcclusionPersistenceWindowSeconds)
+            {
+                _oldTrackExpiredByDeadline = true;
+            }
+
+            _occlusionStartedAt             = null;
             _awaitingFirstReappearanceMatch = true;
-            _countingReacquisitionFrames = true;
+            _countingReacquisitionFrames    = true;
         }
 
         // ── Ambiguity detection ────────────────────────────────────────────────
-        // Two or more same-class targets within one box-width of each other are
-        // observably indistinguishable. Identity switches in such frames are not
-        // actionable failures — report them separately.
         bool frameIsAmbiguous = false;
         if (visibleTargets.Length >= 2)
         {
@@ -227,14 +268,9 @@ public sealed class ScenarioMetricsRecorder
         if (frameIsAmbiguous)
             _ambiguousIdentityFrames++;
 
-        // ── Global one-to-one assignment via the Hungarian algorithm ──────────
-        // Greedy target-by-target selection can pair Target A to the nearer of two
-        // detections in a crossing scenario, forcing Target B onto the wrong track and
-        // producing a spurious identity switch.  Global assignment minimises total
-        // distance across all pairs simultaneously, giving valid IS counts.
+        // ── Global one-to-one assignment ─────────────────────────────────────
         int[] assignment = HungarianAssign(visibleTargets, detections, _matchRadiusPixels);
 
-        // Build a snapshot now (assignment is ready) for the ring buffer and switch traces.
         FrameSnap snap = new(_frames, timestamp, visibleTargets, detections.ToArray(), assignment);
 
         var matchedDetections = new HashSet<int>();
@@ -251,9 +287,10 @@ public sealed class ScenarioMetricsRecorder
                     _lostAtByTarget[target.Id] = timestamp;
                     _trackLosses++;
                 }
-                // Count frames a reappeared-but-not-yet-matched target stays unmatched.
                 if (_countingReacquisitionFrames)
-                    _reacquisitionFrameCount++;
+                {
+                    _currentCycleReacqFrames++;
+                }
                 continue;
             }
 
@@ -267,12 +304,20 @@ public sealed class ScenarioMetricsRecorder
                 if (!frameIsAmbiguous)
                 {
                     _identitySwitchesOutsideAmbiguity++;
-                    // Capture a diagnostic CSV window around this switch event.
+
+                    // Classify: expected reinitialization after confirmed expiry, or a true IS?
+                    // _awaitingFirstReappearanceMatch is still true here — it's cleared below.
+                    if (_awaitingFirstReappearanceMatch && _oldTrackExpiredByDeadline)
+                        _expectedTrackReinitializations++;
+                    else
+                        _unexpectedIdentitySwitchesOutsideAmbiguity++;
+
+                    // Diagnostic CSV window regardless of IS type.
                     var trace = new SwitchTrace
                     {
-                        TargetId = target.Id,
-                        OldTrackId = previousTrack,
-                        NewTrackId = match.TrackId,
+                        TargetId       = target.Id,
+                        OldTrackId     = previousTrack,
+                        NewTrackId     = match.TrackId,
                         SwitchFrameIndex = _frames,
                     };
                     foreach (FrameSnap s in _snapBuffer)
@@ -287,8 +332,10 @@ public sealed class ScenarioMetricsRecorder
             if (_awaitingFirstReappearanceMatch)
             {
                 _awaitingFirstReappearanceMatch = false;
-                _countingReacquisitionFrames = false;
-                _firstTrackIdAfterOcclusion = match.TrackId;
+                _countingReacquisitionFrames    = false;
+                _firstTrackIdAfterOcclusion     = match.TrackId;
+                _maxReacquisitionFrames = Math.Max(_maxReacquisitionFrames, _currentCycleReacqFrames);
+                _successfulReacquisitions++;
                 if (_trackIdAtOcclusionStart.HasValue && _trackIdAtOcclusionStart.Value != match.TrackId)
                     _trackIdPreservedAfterOcclusion = false;
             }
@@ -302,50 +349,72 @@ public sealed class ScenarioMetricsRecorder
         }
 
         // ── False-positive classification ─────────────────────────────────────
-        // Detections not matched to any visible target are FP candidates.
-        // During expected occlusion: a detection whose centre overlaps where the
-        // invisible target was last seen is a persisted/extrapolated track — not a
-        // false positive in the evaluator sense.
+        // Unmatched detections are classified into one of four mutually exclusive buckets.
+        // Only GhostAfterPersistenceDeadline, DuplicateAfterReappearance, and
+        // UnrelatedFalsePositive count toward the FalsePositives gate.
+        // ExpectedOcclusionPersistenceFrames are intentional extrapolation and are NOT an FP.
         int unmatched = detections.Count - matchedDetections.Count;
-        if (anyInvisible && unmatched > 0)
+        if (unmatched > 0)
         {
-            double occlusionAgeSeconds = _occlusionStartedAt.HasValue
-                ? (timestamp - _occlusionStartedAt.Value).TotalSeconds
-                : 0;
-
             foreach (int di in Enumerable.Range(0, detections.Count).Where(i => !matchedDetections.Contains(i)))
             {
-                // Is this detection near any invisible target's last known position?
-                bool isPersisted = invisibleTargets.Any(t =>
-                    Distance(detections[di].Center, t.Center) <= _matchRadiusPixels);
+                ArenaDetection det = detections[di];
 
-                if (isPersisted && occlusionAgeSeconds <= OcclusionPersistenceWindowSeconds)
+                if (anyInvisible)
                 {
-                    _trackPresentDuringOcclusion++;
-                }
-                else if (isPersisted && occlusionAgeSeconds > OcclusionPersistenceWindowSeconds)
-                {
-                    _ghostFramesAfterWindow++;
-                    _falsePositives++;
+                    // During occlusion: classify by track identity and observation age.
+                    bool isOldOccludedTrack = _trackIdAtOcclusionStart.HasValue
+                        && det.TrackId == _trackIdAtOcclusionStart.Value;
+
+                    if (isOldOccludedTrack
+                        && det.IsExtrapolated
+                        && det.ObservationAgeMs <= OcclusionPersistenceWindowMs)
+                    {
+                        // Old track extrapolating within its allowed window — expected, not an FP.
+                        _expectedOcclusionPersistenceFrames++;
+                    }
+                    else if (isOldOccludedTrack
+                        && det.ObservationAgeMs > OcclusionPersistenceWindowMs)
+                    {
+                        // Old track still emitted after its deadline — ghost.
+                        _ghostAfterPersistenceDeadline++;
+                        _falsePositives++;
+                    }
+                    else
+                    {
+                        // Unrelated: not the known occluded track.
+                        _unrelatedFalsePositive++;
+                        _falsePositives++;
+                    }
                 }
                 else
                 {
-                    _falsePositives++;
-                    _spuriousFPDuringOcclusion++;
+                    // Visible phase: check if this is a lingering old track emitted alongside the
+                    // new track shortly after reappearance (duplicate within MaxLostSeconds).
+                    bool isDuplicate = _trackIdAtOcclusionStart.HasValue
+                        && det.TrackId == _trackIdAtOcclusionStart.Value
+                        && _reappearanceTimestamp.HasValue
+                        && (timestamp - _reappearanceTimestamp.Value).TotalSeconds
+                            <= OcclusionPersistenceWindowSeconds;
+
+                    if (isDuplicate)
+                    {
+                        _duplicateAfterReappearance++;
+                        _falsePositives++;
+                    }
+                    else
+                    {
+                        _unrelatedFalsePositive++;
+                        _falsePositives++;
+                    }
                 }
             }
         }
-        else
-        {
-            _falsePositives += unmatched;
-        }
 
         // ── Switch trace ring buffer ──────────────────────────────────────────
-        // Keep the last SwitchWindowBefore frames available for trace capture.
         _snapBuffer.Enqueue(snap);
         while (_snapBuffer.Count > SwitchWindowBefore) _snapBuffer.Dequeue();
 
-        // Feed current frame to any pending after-window captures.
         for (int pi = _pendingSwitchTraces.Count - 1; pi >= 0; pi--)
         {
             SwitchTrace pt = _pendingSwitchTraces[pi];
@@ -401,7 +470,6 @@ public sealed class ScenarioMetricsRecorder
                             "MISS", "", "", "", "", "", "", "", ""));
                     }
                 }
-                // Unmatched detections.
                 var matched = new HashSet<int>(s.Assignment.Where(x => x >= 0));
                 for (int di = 0; di < s.Detections.Length; di++)
                 {
@@ -454,17 +522,24 @@ public sealed class ScenarioMetricsRecorder
         InferenceP99Ms:           Percentile(_inferenceMs, 0.99),
         FrameAgeP95Ms:            Percentile(_frameAgeMs, 0.95),
         CaptureFpsP50:            Percentile(_captureFps, 0.50),
-        OcclusionFrames:                    _occlusionFrames,
-        TrackPresentDuringOcclusionFrames:  _trackPresentDuringOcclusion,
-        GhostFramesAfterPersistenceWindow:  _ghostFramesAfterWindow,
-        TrackIdPreservedAfterOcclusion:     _trackIdPreservedAfterOcclusion,
-        OldTrackIdAtOcclusionStart:         _trackIdAtOcclusionStart ?? 0,
-        NewTrackIdAtFirstReappearance:      _firstTrackIdAfterOcclusion ?? 0,
-        ReacquisitionFrameCount:            _reacquisitionFrameCount,
-        SpuriousFPDuringOcclusion:          _spuriousFPDuringOcclusion,
-        AmbiguousIdentityFrames:            _ambiguousIdentityFrames,
-        IdentitySwitchesOutsideAmbiguity:   _identitySwitchesOutsideAmbiguity,
-        SwitchTracesWritten:                _switchTracesWritten);
+        OcclusionFrames:                        _occlusionFrames,
+        ExpectedOcclusionPersistenceFrames:     _expectedOcclusionPersistenceFrames,
+        GhostAfterPersistenceDeadline:          _ghostAfterPersistenceDeadline,
+        DuplicateAfterReappearance:             _duplicateAfterReappearance,
+        UnrelatedFalsePositive:                 _unrelatedFalsePositive,
+        TrackIdPreservedAfterOcclusion:         _trackIdPreservedAfterOcclusion,
+        OldTrackExpiredByDeadline:              _oldTrackExpiredByDeadline,
+        OldTrackIdAtOcclusionStart:             _trackIdAtOcclusionStart ?? 0,
+        NewTrackIdAtFirstReappearance:          _firstTrackIdAfterOcclusion ?? 0,
+        IdentitySwitchesOutsideAmbiguity:       _identitySwitchesOutsideAmbiguity,
+        ExpectedTrackReinitializations:         _expectedTrackReinitializations,
+        UnexpectedIdentitySwitchesOutsideAmbiguity: _unexpectedIdentitySwitchesOutsideAmbiguity,
+        AmbiguousIdentityFrames:                _ambiguousIdentityFrames,
+        OcclusionCycleCount:                    _occlusionCycleCount,
+        SuccessfulReacquisitions:               _successfulReacquisitions,
+        FailedReacquisitions:                   _failedReacquisitions,
+        MaxReacquisitionFrames:                 _maxReacquisitionFrames,
+        SwitchTracesWritten:                    _switchTracesWritten);
 
     private sealed record FrameSnap(
         int FrameIndex,
@@ -504,7 +579,6 @@ public sealed class ScenarioMetricsRecorder
             return result;
         }
 
-        // Build cost matrix (size n×m). Pairs beyond matchRadius get a large sentinel.
         const double INF = 1e9;
         int sz = Math.Max(n, m);
         double[,] cost = new double[sz, sz];
@@ -519,10 +593,9 @@ public sealed class ScenarioMetricsRecorder
                 cost[i, j] = d <= matchRadius ? d : INF;
             }
 
-        // Standard O(n³) Hungarian implementation.
         double[] u = new double[sz + 1];
         double[] v = new double[sz + 1];
-        int[] p = new int[sz + 1];      // col→row assignment
+        int[] p = new int[sz + 1];
         int[] way = new int[sz + 1];
 
         for (int i = 1; i <= sz; i++)
@@ -556,8 +629,6 @@ public sealed class ScenarioMetricsRecorder
                     }
                 }
 
-                // All unreached columns are at INF — no augmenting path exists for
-                // this row (every target→detection pair exceeds matchRadius).
                 if (j1 < 0) break;
 
                 for (int j = 0; j <= sz; j++)
@@ -571,7 +642,6 @@ public sealed class ScenarioMetricsRecorder
             }
             while (p[j0] != 0);
 
-            // Only walk the augmenting path when we actually found a free column.
             if (!augmentingPathFound) continue;
 
             do
@@ -583,7 +653,6 @@ public sealed class ScenarioMetricsRecorder
             while (j0 != 0);
         }
 
-        // Decode: for each target row find its assigned detection column.
         int[] colForRow = new int[sz + 1];
         for (int j = 1; j <= sz; j++)
             if (p[j] > 0 && p[j] <= sz)
