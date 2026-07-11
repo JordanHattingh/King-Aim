@@ -46,11 +46,23 @@
                 </ComboBox.Resources>
             </ComboBox>
 
+            <TextBlock Text="Profile:"
+                       Foreground="White"
+                       VerticalAlignment="Center"
+                       Margin="14,6,8,6" />
+            <ComboBox x:Name="NoiseProfileComboBox"
+                      Width="150"
+                      Margin="0,6"
+                      Background="#FF3F3F46"
+                      Foreground="Black"
+                      BorderBrush="#FF5A5A5F"
+                      SelectionChanged="NoiseProfileComboBox_SelectionChanged" />
+
             <CheckBox x:Name="ModelPipelineCheckBox"
                       Content="Run full pipeline (capture -> inference -> tracking -> gamepad)"
                       Foreground="White"
                       VerticalAlignment="Center"
-                      Margin="20,0,0,0"
+                      Margin="14,0,0,0"
                       Checked="ModelPipelineCheckBox_Changed"
                       Unchecked="ModelPipelineCheckBox_Changed" />
 

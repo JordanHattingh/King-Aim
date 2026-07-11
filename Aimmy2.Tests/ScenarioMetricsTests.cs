@@ -8,6 +8,17 @@ namespace Aimmy2.Tests;
 
 public sealed class ScenarioMetricsTests
 {
+    [Fact]
+    public void SyntheticProfiles_MapToNamedDeterministicConfigurations()
+    {
+        foreach (SyntheticProfile profile in Enum.GetValues<SyntheticProfile>())
+        {
+            SyntheticNoiseConfig config = profile.Configuration();
+            Assert.Equal(profile.ToString(), config.ProfileName);
+            Assert.Equal(42, config.Seed);
+        }
+    }
+
     private static ScenarioMetricsSummary ClassifyOcclusionDetection(int trackId, double ageMs, bool extrapolated, double elapsedMs)
     {
         var recorder = new ScenarioMetricsRecorder("OcclusionClassification", matchRadiusPixels: 30);

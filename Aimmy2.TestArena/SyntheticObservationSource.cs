@@ -3,6 +3,26 @@ using System.Drawing;
 
 namespace Aimmy2.TestArena
 {
+    public enum SyntheticProfile
+    {
+        Clean,
+        Noisy,
+        Occluded,
+        FalsePositiveStress,
+    }
+
+    public static class SyntheticProfileExtensions
+    {
+        public static SyntheticNoiseConfig Configuration(this SyntheticProfile profile) => profile switch
+        {
+            SyntheticProfile.Clean => SyntheticNoiseConfig.Clean,
+            SyntheticProfile.Noisy => SyntheticNoiseConfig.Noisy,
+            SyntheticProfile.Occluded => SyntheticNoiseConfig.Occluded,
+            SyntheticProfile.FalsePositiveStress => SyntheticNoiseConfig.FalsePositiveStress,
+            _ => throw new ArgumentOutOfRangeException(nameof(profile), profile, null),
+        };
+    }
+
     /// <summary>
     /// Converts ArenaTarget ground truth into synthetic Predictions and feeds them
     /// directly into a standalone TrackManager + Kalman + AccessibilityObserver pipeline.

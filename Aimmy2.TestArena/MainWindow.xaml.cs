@@ -52,6 +52,9 @@ namespace Aimmy2.TestArena
                 ScenarioComboBox.Items.Add(kind);
             }
             ScenarioComboBox.SelectedIndex = 0;
+            foreach (SyntheticProfile profile in Enum.GetValues<SyntheticProfile>())
+                NoiseProfileComboBox.Items.Add(profile);
+            NoiseProfileComboBox.SelectedItem = SyntheticProfile.Clean;
 
             _scenario = new Scenario(ScenarioKind.StaticEnemy, 900, 700);
             _lastTick = DateTime.UtcNow;
@@ -73,6 +76,12 @@ namespace Aimmy2.TestArena
             {
                 RebuildScenario(kind);
             }
+        }
+
+        private void NoiseProfileComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (IsLoaded && ScenarioComboBox.SelectedItem is ScenarioKind kind)
+                RebuildScenario(kind);
         }
 
         private void Window_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -112,7 +121,7 @@ namespace Aimmy2.TestArena
 
             _syntheticSource?.Dispose();
             SyntheticNoiseConfig? noiseConfig = kind.Domain() == BenchmarkDomain.SyntheticTracking
-                ? SyntheticNoiseConfig.Clean
+                ? (NoiseProfileComboBox.SelectedItem as SyntheticProfile? ?? SyntheticProfile.Clean).Configuration()
                 : null;
             _syntheticSource = noiseConfig != null ? new SyntheticObservationSource(noiseConfig) : null;
 
@@ -449,7 +458,7 @@ namespace Aimmy2.TestArena
                     $"Scenario: {_scenario.Kind}\n" +
                     $"Targets: {_scenario.Targets.Count}\n\n" +
                     $"Mode: Synthetic injection (YOLO bypassed)\n" +
-                    $"Profile: {SyntheticNoiseConfig.Clean.ProfileName}\n" +
+                    $"Profile: {(NoiseProfileComboBox.SelectedItem as SyntheticProfile? ?? SyntheticProfile.Clean).Configuration().ProfileName}\n" +
                     $"Render FPS: {1.0 / Math.Max(0.001, _lastRenderDtSeconds):F1}\n" +
                     $"DPI scale: {dpi.DpiScaleX:F2} x {dpi.DpiScaleY:F2}\n\n" +
                     $"Active Tracks: {_syntheticSource!.ActiveTracks}\n" +
