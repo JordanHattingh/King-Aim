@@ -162,6 +162,7 @@ namespace Aimmy2.AILogic
         // Legacy Aimmy mouse output remains isolated in HandleAim(); the newer track pipeline does not
         // own a second mouse/recoil/auto-fire implementation.
         private readonly TrackManager _trackManager = new();
+        private readonly AccessibilityObserver _accessibilityObserver;
         private readonly TargetSelector _targetSelector = new();
         private readonly GamepadAssistController _gamepadAssistController = new();
         private readonly XInputReader _physicalGamepadReader = new();
@@ -179,6 +180,12 @@ namespace Aimmy2.AILogic
         public int? GamepadFixedTrackId { get; set; }
         public uint PhysicalGamepadIndex { get; set; } = 0;
         public bool GamepadAssistEnabled { get; set; } = false;
+
+        /// <summary>
+        /// Minimum calibrated confidence allowed into the production tracker when the calibration
+        /// companion model is active. The user product threshold still applies on top of this floor.
+        /// </summary>
+        public float MinCalibrationConfidence { get; set; } = 0.15f;
 
         // Diagnostics
         public double CaptureFps { get; private set; }
@@ -212,6 +219,12 @@ namespace Aimmy2.AILogic
         public float RY { get; private set; }
         public double AcquisitionBoostRemainingMs => _gamepadAssistController.AcquisitionBoostRemainingMs;
         public bool PhysicalControllerConnected { get; private set; }
+
+        private AccessibilityObservation[] _currentObservations = Array.Empty<AccessibilityObservation>();
+
+        /// <summary>Latest immutable semantic track snapshot for accessibility output modules.</summary>
+        public IReadOnlyList<AccessibilityObservation> CurrentObservations =>
+            Volatile.Read(ref _currentObservations);
 
         public bool GamepadConnected => _gamepadOutput?.IsConnected ?? false;
 
@@ -317,6 +330,7 @@ namespace Aimmy2.AILogic
 
         public AIManager(string modelPath)
         {
+            _accessibilityObserver = new AccessibilityObserver(_trackManager);
             _modelPath = modelPath;
 
             // Initialize the cached image size
@@ -1452,7 +1466,10 @@ namespace Aimmy2.AILogic
 
                     // Candidate collection/calibration runs at a low fixed floor. Product selection
                     // still uses the configured threshold, now against calibrated confidence.
-                    float finalThreshold = AimSettings.MinimumConfidence;
+                    float calibratedFloor = Math.Clamp(MinCalibrationConfidence, 0f, 1f);
+                    float finalThreshold = _calibrationMlp.IsLoaded
+                        ? Math.Max(AimSettings.MinimumConfidence, calibratedFloor)
+                        : AimSettings.MinimumConfidence;
                     KDPredictions = KDPredictions
                         .Where(p => p.Confidence >= finalThreshold)
                         .ToList();
@@ -1614,6 +1631,9 @@ namespace Aimmy2.AILogic
             // Tracking motion belongs to the frame observation timestamp, not to the later
             // processing time after capture/inference latency. Selection age still uses `now`.
             IReadOnlyList<Track> tracks = _trackManager.Update(predictions, classRoles, observationTime);
+            Volatile.Write(
+                ref _currentObservations,
+                _accessibilityObserver.Observe(now).ToArray());
 
             PlayerDetections = _trackManager.PlayerCount;
             EnemyDetections = _trackManager.EnemyCount;
@@ -2289,6 +2309,7 @@ namespace Aimmy2.AILogic
             _calibrationMlp.Dispose();
             _movementMlp.Dispose();
             Volatile.Write(ref _roiTargetSnapshot, null);
+            Volatile.Write(ref _currentObservations, Array.Empty<AccessibilityObservation>());
 
             // Flush any buffered training data to disk before exit
             _trackLogger.Dispose();

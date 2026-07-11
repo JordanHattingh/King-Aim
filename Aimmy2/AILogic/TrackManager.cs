@@ -24,18 +24,25 @@ namespace Aimmy2.AILogic
         /// </summary>
         public PointF Velocity { get; internal set; }
 
+        /// <summary>Typed absolute desktop center for the current (possibly extrapolated) box.</summary>
+        public DesktopPixel CenterDesktop { get; internal set; }
+
+        /// <summary>Typed display-normalized center for the current (possibly extrapolated) box.</summary>
+        public ScreenFraction CenterFraction { get; internal set; }
+
         public int ObservationCount { get; internal set; }
 
         internal DateTime LastBufferTimestamp { get; set; }
         internal KalmanPrediction Kalman { get; } = new();
         internal TrackRingBuffer RingBuffer { get; } = new();
+        internal int KeypointFrameAge { get; set; }
+        internal RectangleF LastObservedBoundingBox { get; set; }
 
         public PlayerKeypoints? Keypoints { get; internal set; }
         public (float X, float Y)? GruPredictedCenter { get; internal set; }
+        public bool BoundingBoxIsExtrapolated { get; internal set; }
 
-        internal PointF Center => new(
-            BoundingBox.X + BoundingBox.Width / 2f,
-            BoundingBox.Y + BoundingBox.Height / 2f);
+        internal PointF Center => new(CenterDesktop.X, CenterDesktop.Y);
     }
 
     public sealed class TrackManager
@@ -52,6 +59,12 @@ namespace Aimmy2.AILogic
         public int MaxFramesLost { get; set; } = 5;
 
         public double MaxLostSeconds { get; set; } = 0.6;
+
+        /// <summary>Number of consecutive non-pose frames that may reuse the last pose sample.</summary>
+        public int KeypointCarryForwardFrames { get; set; } = 3;
+
+        /// <summary>When enabled, temporarily extrapolate a lost track's box before freezing it.</summary>
+        public bool UsePredictiveBoundingBox { get; set; } = true;
 
         /// <summary>First-order velocity filter response rate in 1/seconds.</summary>
         public float VelocityResponseRatePerSecond { get; set; } = 12f;
@@ -72,6 +85,7 @@ namespace Aimmy2.AILogic
         {
             ArgumentNullException.ThrowIfNull(detections);
             ArgumentNullException.ThrowIfNull(classRoles);
+            CoordinateContractGuards.ValidateDimensions(ScreenWidth, ScreenHeight);
 
             var unmatchedDetections = new HashSet<int>(Enumerable.Range(0, detections.Count));
             var matchedTracks = new HashSet<Track>();
@@ -94,25 +108,19 @@ namespace Aimmy2.AILogic
                 unmatchedDetections.Remove(match.DetectionIndex);
             }
 
-            foreach (var track in _tracks)
+            foreach (Track track in _tracks)
             {
                 if (matchedTracks.Contains(track))
                     continue;
 
                 track.FramesSinceLastSeen++;
+                AgeKeypointsWithoutPose(track);
 
                 double missingAgeSeconds = Math.Max(0, (frameTime - track.LastSeen).TotalSeconds);
-                if (missingAgeSeconds > 0 && missingAgeSeconds < MaxLostSeconds)
-                {
-                    var predicted = track.Kalman.GetKalmanPosition(mouseSpeed: 0, timestamp: frameTime, applyLead: false);
-                    float halfW = track.BoundingBox.Width / 2f;
-                    float halfH = track.BoundingBox.Height / 2f;
-                    track.BoundingBox = new RectangleF(
-                        predicted.X - halfW,
-                        predicted.Y - halfH,
-                        track.BoundingBox.Width,
-                        track.BoundingBox.Height);
-                }
+                track.BoundingBoxIsExtrapolated = false;
+
+                if (UsePredictiveBoundingBox)
+                    ExtrapolateLostBoundingBox(track, missingAgeSeconds);
 
                 if (track.RingBuffer.Count > 0 && frameTime > track.LastBufferTimestamp)
                 {
@@ -131,7 +139,7 @@ namespace Aimmy2.AILogic
 
             foreach (int detectionIndex in unmatchedDetections)
             {
-                var detection = detections[detectionIndex];
+                Prediction detection = detections[detectionIndex];
                 SemanticRole role = classRoles.GetValueOrDefault(detection.ClassId, SemanticRole.Unknown);
                 RectangleF detectionBox = GetScreenRectangle(detection);
                 PointF center = TrackCenter(detectionBox);
@@ -143,6 +151,7 @@ namespace Aimmy2.AILogic
                     ClassId = detection.ClassId,
                     ClassName = detection.ClassName,
                     BoundingBox = detectionBox,
+                    LastObservedBoundingBox = detectionBox,
                     Confidence = detection.Confidence,
                     FirstSeen = frameTime,
                     LastSeen = frameTime,
@@ -151,6 +160,8 @@ namespace Aimmy2.AILogic
                     Velocity = PointF.Empty,
                     ObservationCount = 1,
                     Keypoints = detection.Keypoints,
+                    KeypointFrameAge = detection.Keypoints == null ? Math.Max(0, KeypointCarryForwardFrames) : 0,
+                    BoundingBoxIsExtrapolated = false,
                 };
 
                 newTrack.Kalman.UpdateKalmanFilter(new KalmanPrediction.Detection
@@ -161,10 +172,15 @@ namespace Aimmy2.AILogic
                 });
 
                 newTrack.RingBuffer.Push(CreateObservedSample(newTrack, detection, center, dtSeconds: 0f));
+                RefreshCoordinateContracts(newTrack);
                 _tracks.Add(newTrack);
             }
 
             _tracks.RemoveAll(t => (frameTime - t.LastSeen).TotalSeconds > MaxLostSeconds);
+
+            foreach (Track track in _tracks)
+                RefreshCoordinateContracts(track);
+
             return _tracks.ToList();
         }
 
@@ -182,7 +198,10 @@ namespace Aimmy2.AILogic
                 Timestamp = frameTime,
             });
 
-            var smoothedDetection = track.Kalman.GetKalmanPosition(mouseSpeed: 0, timestamp: frameTime, applyLead: false);
+            KalmanPrediction.Detection smoothedDetection = track.Kalman.GetKalmanPosition(
+                mouseSpeed: 0,
+                timestamp: frameTime,
+                applyLead: false);
             PointF smoothedCenter = new(smoothedDetection.X, smoothedDetection.Y);
 
             if (dt > 1e-5f)
@@ -205,16 +224,84 @@ namespace Aimmy2.AILogic
                 smoothedCenter.Y - halfH,
                 detectionBox.Width,
                 detectionBox.Height);
+            track.LastObservedBoundingBox = track.BoundingBox;
+            track.BoundingBoxIsExtrapolated = false;
 
             track.Confidence = detection.Confidence;
             track.ClassName = detection.ClassName;
-            track.Keypoints = detection.Keypoints;
+            UpdateKeypoints(track, detection.Keypoints);
             track.LastSeen = frameTime;
             track.FramesSinceLastSeen = 0;
             track.ObservationCount++;
 
             track.RingBuffer.Push(CreateObservedSample(track, detection, smoothedCenter, dt));
             track.LastBufferTimestamp = frameTime;
+            RefreshCoordinateContracts(track);
+        }
+
+        private void UpdateKeypoints(Track track, PlayerKeypoints? incoming)
+        {
+            if (incoming != null)
+            {
+                track.Keypoints = incoming;
+                track.KeypointFrameAge = 0;
+                return;
+            }
+
+            AgeKeypointsWithoutPose(track);
+        }
+
+        private void AgeKeypointsWithoutPose(Track track)
+        {
+            int carryLimit = Math.Max(0, KeypointCarryForwardFrames);
+            if (track.Keypoints != null && track.KeypointFrameAge < carryLimit)
+            {
+                track.KeypointFrameAge++;
+                return;
+            }
+
+            track.Keypoints = null;
+            track.KeypointFrameAge = carryLimit;
+        }
+
+        private void ExtrapolateLostBoundingBox(Track track, double missingAgeSeconds)
+        {
+            double extrapolationLimit = Math.Max(0, MaxLostSeconds / 2.0);
+            if (missingAgeSeconds <= 0 || missingAgeSeconds > extrapolationLimit)
+                return;
+
+            RectangleF observedBox = track.LastObservedBoundingBox.Width > 0 && track.LastObservedBoundingBox.Height > 0
+                ? track.LastObservedBoundingBox
+                : track.BoundingBox;
+            PointF observedCenter = TrackCenter(observedBox);
+            float predictedX;
+            float predictedY;
+
+            if (track.GruPredictedCenter is { } gruCenter)
+            {
+                float gruDeltaX = gruCenter.X - observedCenter.X;
+                float gruDeltaY = gruCenter.Y - observedCenter.Y;
+                float referenceDt = track.RingBuffer.Count > 0
+                    ? Math.Clamp(track.RingBuffer.Tail.DtSeconds, 0.001f, 0.1f)
+                    : 1f / 60f;
+                float stepCount = Math.Max(1f, (float)missingAgeSeconds / referenceDt);
+                predictedX = observedCenter.X + gruDeltaX * stepCount;
+                predictedY = observedCenter.Y + gruDeltaY * stepCount;
+            }
+            else
+            {
+                predictedX = observedCenter.X
+                    + track.Velocity.X * Math.Max(ScreenWidth, 1) * (float)missingAgeSeconds;
+                predictedY = observedCenter.Y
+                    + track.Velocity.Y * Math.Max(ScreenHeight, 1) * (float)missingAgeSeconds;
+            }
+
+            track.BoundingBox = new RectangleF(
+                predictedX - observedBox.Width / 2f,
+                predictedY - observedBox.Height / 2f,
+                observedBox.Width,
+                observedBox.Height);
+            track.BoundingBoxIsExtrapolated = true;
         }
 
         private TrackObservation CreateObservedSample(
@@ -223,20 +310,31 @@ namespace Aimmy2.AILogic
             PointF center,
             float dtSeconds)
         {
-            float sw = Math.Max(ScreenWidth, 1);
-            float sh = Math.Max(ScreenHeight, 1);
+            ScreenFraction centerFraction = new DesktopPixel(center.X, center.Y)
+                .ToScreenFraction(ScreenLeft, ScreenTop, ScreenWidth, ScreenHeight);
 
             return new TrackObservation
             {
-                CxNorm = Math.Clamp((center.X - ScreenLeft) / sw, 0f, 1f),
-                CyNorm = Math.Clamp((center.Y - ScreenTop) / sh, 0f, 1f),
-                WNorm = Math.Clamp(track.BoundingBox.Width / sw, 0f, 1f),
-                HNorm = Math.Clamp(track.BoundingBox.Height / sh, 0f, 1f),
+                CxNorm = Math.Clamp(centerFraction.X, 0f, 1f),
+                CyNorm = Math.Clamp(centerFraction.Y, 0f, 1f),
+                WNorm = Math.Clamp(track.BoundingBox.Width / Math.Max(ScreenWidth, 1), 0f, 1f),
+                HNorm = Math.Clamp(track.BoundingBox.Height / Math.Max(ScreenHeight, 1), 0f, 1f),
                 Confidence = detection.Confidence,
                 ObservedMask = 1f,
                 DtSeconds = dtSeconds,
                 AgeSeconds = 0f,
             };
+        }
+
+        private void RefreshCoordinateContracts(Track track)
+        {
+            PointF center = TrackCenter(track.BoundingBox);
+            track.CenterDesktop = new DesktopPixel(center.X, center.Y);
+            track.CenterFraction = track.CenterDesktop.ToScreenFraction(
+                ScreenLeft,
+                ScreenTop,
+                ScreenWidth,
+                ScreenHeight);
         }
 
         private static RectangleF GetScreenRectangle(Prediction prediction) =>
@@ -246,27 +344,5 @@ namespace Aimmy2.AILogic
 
         private static PointF TrackCenter(RectangleF box) =>
             new(box.X + box.Width / 2f, box.Y + box.Height / 2f);
-
-        private static float Distance(PointF a, PointF b)
-        {
-            float dx = a.X - b.X;
-            float dy = a.Y - b.Y;
-            return MathF.Sqrt(dx * dx + dy * dy);
-        }
-
-        private static float ComputeIoU(RectangleF a, RectangleF b)
-        {
-            float x1 = Math.Max(a.Left, b.Left);
-            float y1 = Math.Max(a.Top, b.Top);
-            float x2 = Math.Min(a.Right, b.Right);
-            float y2 = Math.Min(a.Bottom, b.Bottom);
-
-            if (x2 <= x1 || y2 <= y1)
-                return 0f;
-
-            float intersection = (x2 - x1) * (y2 - y1);
-            float union = a.Width * a.Height + b.Width * b.Height - intersection;
-            return union > 0 ? intersection / union : 0f;
-        }
     }
 }

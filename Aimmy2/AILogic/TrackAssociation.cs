@@ -1,3 +1,4 @@
+using AILogic;
 using System.Drawing;
 
 namespace Aimmy2.AILogic
@@ -9,6 +10,18 @@ namespace Aimmy2.AILogic
         public float IoUWeight { get; set; } = 0.45f;
         public float CenterDistanceWeight { get; set; } = 0.30f;
         public float MotionErrorWeight { get; set; } = 0.25f;
+
+        /// <summary>
+        /// Blend amount between the timestamped Kalman motion prior and the previous GRU centre hint.
+        /// Zero is Kalman-only; one is GRU-only. Ignored when the track has no GRU prediction.
+        /// </summary>
+        public float GruAssociationWeight { get; set; } = 0.6f;
+
+        /// <summary>
+        /// Optional pose-geometry contribution. Disabled by default until a pose bundle opts in.
+        /// </summary>
+        public float PoseSimilarityWeight { get; set; } = 0.0f;
+
         public float MaximumAcceptedCost { get; set; } = 0.75f;
         public float UnmatchedCost { get; set; } = 1.25f;
         public float MaximumCenterDistanceScreenFraction { get; set; } = 0.15f;
@@ -27,7 +40,8 @@ namespace Aimmy2.AILogic
 
     /// <summary>
     /// Global minimum-cost assignment using a padded Hungarian matrix. Cost combines overlap,
-    /// screen-normalized center distance, and error against timestamped per-second motion.
+    /// screen-normalized center distance, timestamped Kalman/GRU motion error, and optional
+    /// translation/scale-normalized pose geometry.
     /// </summary>
     public sealed class GlobalCostTrackAssociation : ITrackAssociationStrategy
     {
@@ -94,26 +108,124 @@ namespace Aimmy2.AILogic
             RectangleF detectionBox = GetScreenRectangle(detection);
             PointF trackCenter = Center(track.BoundingBox);
             PointF detectionCenter = Center(detectionBox);
-            double diagonal = Math.Max(1.0, Math.Sqrt((double)screenWidth * screenWidth + (double)screenHeight * screenHeight));
+            double diagonal = Math.Max(
+                1.0,
+                Math.Sqrt((double)screenWidth * screenWidth + (double)screenHeight * screenHeight));
 
             double centerDistance = Distance(trackCenter, detectionCenter) / diagonal;
-            if (centerDistance > settings.MaximumCenterDistanceScreenFraction && ComputeIoU(track.BoundingBox, detectionBox) <= 0)
+            if (centerDistance > settings.MaximumCenterDistanceScreenFraction
+                && ComputeIoU(track.BoundingBox, detectionBox) <= 0)
+            {
                 return settings.UnmatchedCost;
+            }
 
-            double dt = Math.Clamp((observationTime - track.LastSeen).TotalSeconds, 0.0, 0.5);
-            var predictedCenter = new PointF(
-                trackCenter.X + track.Velocity.X * Math.Max(screenWidth, 1) * (float)dt,
-                trackCenter.Y + track.Velocity.Y * Math.Max(screenHeight, 1) * (float)dt);
+            KalmanPrediction.Detection kalman = track.Kalman.GetKalmanPosition(
+                mouseSpeed: 0,
+                timestamp: observationTime,
+                applyLead: false);
+            PointF kalmanCenter = new(kalman.X, kalman.Y);
+            PointF predictedCenter = kalmanCenter;
+
+            if (track.GruPredictedCenter is { } gruCenter)
+            {
+                float gruWeight = Math.Clamp(settings.GruAssociationWeight, 0f, 1f);
+                predictedCenter = new PointF(
+                    kalmanCenter.X + (gruCenter.X - kalmanCenter.X) * gruWeight,
+                    kalmanCenter.Y + (gruCenter.Y - kalmanCenter.Y) * gruWeight);
+            }
+
             double motionError = Distance(predictedCenter, detectionCenter) / diagonal;
             double iouCost = 1.0 - ComputeIoU(track.BoundingBox, detectionBox);
 
-            double weightSum = Math.Max(
+            double baseWeightSum = Math.Max(
                 1e-6,
                 settings.IoUWeight + settings.CenterDistanceWeight + settings.MotionErrorWeight);
-            return (
+            double cost = (
                 settings.IoUWeight * iouCost
                 + settings.CenterDistanceWeight * centerDistance
-                + settings.MotionErrorWeight * motionError) / weightSum;
+                + settings.MotionErrorWeight * motionError) / baseWeightSum;
+
+            double? poseSimilarity = ComputePoseSimilarity(
+                track.Keypoints,
+                track.BoundingBox,
+                detection.Keypoints,
+                detectionBox);
+            float poseWeight = Math.Max(0f, settings.PoseSimilarityWeight);
+            if (poseWeight > 0f && poseSimilarity.HasValue)
+                cost += poseWeight * (1.0 - poseSimilarity.Value);
+
+            return cost;
+        }
+
+        private static double? ComputePoseSimilarity(
+            PlayerKeypoints? trackPose,
+            RectangleF trackBox,
+            PlayerKeypoints? detectionPose,
+            RectangleF detectionBox)
+        {
+            if (trackPose == null || detectionPose == null
+                || trackBox.Width <= 0 || trackBox.Height <= 0
+                || detectionBox.Width <= 0 || detectionBox.Height <= 0)
+            {
+                return null;
+            }
+
+            var trackPoints = new List<PointF>(PlayerKeypoints.KeypointCount);
+            var detectionPoints = new List<PointF>(PlayerKeypoints.KeypointCount);
+            for (int i = 0; i < PlayerKeypoints.KeypointCount; i++)
+            {
+                Keypoint a = trackPose[i];
+                Keypoint b = detectionPose[i];
+                if (!a.IsUsable || !b.IsUsable)
+                    continue;
+
+                trackPoints.Add(new PointF(
+                    (a.X - trackBox.Left) / trackBox.Width,
+                    (a.Y - trackBox.Top) / trackBox.Height));
+                detectionPoints.Add(new PointF(
+                    (b.X - detectionBox.Left) / detectionBox.Width,
+                    (b.Y - detectionBox.Top) / detectionBox.Height));
+            }
+
+            if (trackPoints.Count < 2)
+                return null;
+
+            PointF trackCentroid = Centroid(trackPoints);
+            PointF detectionCentroid = Centroid(detectionPoints);
+            double dot = 0;
+            double trackNorm = 0;
+            double detectionNorm = 0;
+
+            for (int i = 0; i < trackPoints.Count; i++)
+            {
+                double ax = trackPoints[i].X - trackCentroid.X;
+                double ay = trackPoints[i].Y - trackCentroid.Y;
+                double bx = detectionPoints[i].X - detectionCentroid.X;
+                double by = detectionPoints[i].Y - detectionCentroid.Y;
+
+                dot += ax * bx + ay * by;
+                trackNorm += ax * ax + ay * ay;
+                detectionNorm += bx * bx + by * by;
+            }
+
+            if (trackNorm <= 1e-9 || detectionNorm <= 1e-9)
+                return null;
+
+            double cosine = dot / Math.Sqrt(trackNorm * detectionNorm);
+            return Math.Clamp((cosine + 1.0) * 0.5, 0.0, 1.0);
+        }
+
+        private static PointF Centroid(IReadOnlyList<PointF> points)
+        {
+            float x = 0;
+            float y = 0;
+            foreach (PointF point in points)
+            {
+                x += point.X;
+                y += point.Y;
+            }
+
+            return new PointF(x / points.Count, y / points.Count);
         }
 
         private static RectangleF GetScreenRectangle(Prediction prediction) =>
