@@ -87,6 +87,56 @@ namespace Aimmy2.Tests
         }
 
         [Fact]
+        public void VelocitySampling_SkipsSubFrameNoiseAndRetainsFiniteState()
+        {
+            var manager = new TrackManager { ScreenWidth = 640, ScreenHeight = 640 };
+            DateTime now = DateTime.UtcNow;
+            Track track = manager.Update([MakePrediction(0, "enemy", 100, 100)], ClassRoles, now).Single();
+
+            track = manager.Update([MakePrediction(0, "enemy", 108, 100)], ClassRoles, now.AddMilliseconds(0.95)).Single();
+
+            Assert.Equal(1, manager.VelocityUpdatesSkippedSubFrame);
+            Assert.Equal(0, manager.VelocityUpdatesAccepted);
+            Assert.Equal(PointF.Empty, track.Velocity);
+            Assert.True(float.IsFinite(track.Velocity.X));
+            Assert.True(float.IsFinite(track.Velocity.Y));
+        }
+
+        [Fact]
+        public void VelocitySampling_AccumulatesFromLastAcceptedAnchor()
+        {
+            var manager = new TrackManager { ScreenWidth = 640, ScreenHeight = 640 };
+            DateTime now = DateTime.UtcNow;
+            manager.Update([MakePrediction(0, "enemy", 100, 100)], ClassRoles, now);
+            manager.Update([MakePrediction(0, "enemy", 108, 100)], ClassRoles, now.AddMilliseconds(0.95));
+            manager.Update([MakePrediction(0, "enemy", 104, 100)], ClassRoles, now.AddMilliseconds(1.90));
+            Track track = manager.Update([MakePrediction(0, "enemy", 112, 100)], ClassRoles, now.AddMilliseconds(16.67)).Single();
+
+            Assert.Equal(2, manager.VelocityUpdatesSkippedSubFrame);
+            Assert.Equal(1, manager.VelocityUpdatesAccepted);
+            Assert.True(track.Velocity.X > 0);
+            Assert.True(float.IsFinite(manager.MaximumAcceptedVelocityMagnitude));
+        }
+
+        [Fact]
+        public void VelocitySampling_NormalCadenceUpdatesAndDropStaysBounded()
+        {
+            var manager = new TrackManager { ScreenWidth = 640, ScreenHeight = 640 };
+            DateTime now = DateTime.UtcNow;
+            Track track = manager.Update([MakePrediction(0, "enemy", 100, 100)], ClassRoles, now).Single();
+            int trackId = track.TrackId;
+            track = manager.Update([MakePrediction(0, "enemy", 108, 100)], ClassRoles, now.AddMilliseconds(16.67)).Single();
+            float observedCenterX = track.CenterDesktop.X;
+            track = manager.Update([], ClassRoles, now.AddMilliseconds(33.34)).Single();
+
+            Assert.Equal(1, manager.VelocityUpdatesAccepted);
+            Assert.Equal(trackId, track.TrackId);
+            Assert.InRange(Math.Abs(track.CenterDesktop.X - observedCenterX), 0, 120);
+            Assert.True(float.IsFinite(track.Velocity.X));
+            Assert.True(float.IsFinite(track.Velocity.Y));
+        }
+
+        [Fact]
         public void EnemyOnly_NeverSelectsFriendly()
         {
             var manager = new TrackManager();
