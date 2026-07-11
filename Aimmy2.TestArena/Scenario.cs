@@ -49,6 +49,11 @@ namespace Aimmy2.TestArena
         DirectionReversal,
         StopStart,
         TemporaryOcclusion,
+        // Split versions of TemporaryOcclusion with well-specified gate expectations:
+        //   ShortOcclusion gap (0.5 s) < MaxLostSeconds (0.6 s) → same TrackId expected.
+        //   LongOcclusion  gap (1.0 s) > MaxLostSeconds (0.6 s) → new TrackId is acceptable.
+        ShortOcclusion,
+        LongOcclusion,
         TwoEnemies,
         EnemyAndFriendlyCrossing,
         MultipleEnemiesCrossing,
@@ -174,6 +179,21 @@ namespace Aimmy2.TestArena
                     break;
 
                 case ScenarioKind.TemporaryOcclusion:
+                    Move(Targets[0], x: Oscillate(_width * 0.2, _width * 0.8, period: 4.0), y: null);
+                    Targets[0].Visible = (_elapsedSeconds % 4.0) < 3.0;
+                    break;
+
+                case ScenarioKind.ShortOcclusion:
+                    // Gap 0.5 s every 5.0 s — well under the 0.6 s persistence window.
+                    // Gate expectation: track survives, same TrackId returned on reappearance.
+                    Move(Targets[0], x: Oscillate(_width * 0.2, _width * 0.8, period: 5.0), y: null);
+                    Targets[0].Visible = (_elapsedSeconds % 5.0) < 4.5;
+                    break;
+
+                case ScenarioKind.LongOcclusion:
+                    // Gap 1.0 s every 4.0 s — well beyond the 0.6 s persistence window.
+                    // Gate expectation: old track expires, new TrackId on reappearance is acceptable,
+                    // but ghost frames must stop within 0.6 s and reacquisition must be prompt.
                     Move(Targets[0], x: Oscillate(_width * 0.2, _width * 0.8, period: 4.0), y: null);
                     Targets[0].Visible = (_elapsedSeconds % 4.0) < 3.0;
                     break;

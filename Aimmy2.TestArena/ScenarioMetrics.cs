@@ -68,9 +68,16 @@ public sealed record ScenarioMetricsSummary(
     int    TrackPresentDuringOcclusionFrames,
     int    GhostFramesAfterPersistenceWindow,
     bool   TrackIdPreservedAfterOcclusion,
+    // Occlusion transition diagnostics.
+    int    OldTrackIdAtOcclusionStart,
+    int    NewTrackIdAtFirstReappearance,
+    int    ReacquisitionFrameCount,
+    int    SpuriousFPDuringOcclusion,
     // Ambiguity-specific metrics (non-zero only for multi-target scenarios with convergence).
     int    AmbiguousIdentityFrames,
-    int    IdentitySwitchesOutsideAmbiguity);
+    int    IdentitySwitchesOutsideAmbiguity,
+    // Identity-switch trace diagnostics.
+    int    SwitchTracesWritten);
 
 public sealed class ScenarioMetricsRecorder
 {
@@ -101,14 +108,28 @@ public sealed class ScenarioMetricsRecorder
     private int _trackPresentDuringOcclusion;
     private int _ghostFramesAfterWindow;
     private bool _trackIdPreservedAfterOcclusion = true;
-    private int? _lastTrackIdBeforeOcclusion;
     private bool _wasOccluded;
     // Allowed persistence window (matches TrackManager.MaxLostSeconds default).
     private const double OcclusionPersistenceWindowSeconds = 0.6;
     private DateTime? _occlusionStartedAt;
+    // Occlusion transition state — corrected ID tracking using an explicit state machine.
+    private int? _trackIdAtOcclusionStart;          // frozen when target first becomes hidden
+    private int? _firstTrackIdAfterOcclusion;       // set on first match after reappearance
+    private bool _awaitingFirstReappearanceMatch;   // true from hidden→visible until first match
+    private bool _countingReacquisitionFrames;      // true from reappearance until first match
+    private int _reacquisitionFrameCount;           // visible frames before first post-occlusion match
+    private int _spuriousFPDuringOcclusion;         // FP not near any hidden target during occlusion
     // Ambiguity tracking
     private int _ambiguousIdentityFrames;
     private int _identitySwitchesOutsideAmbiguity;
+    // Switch trace — ring buffer of recent frames for post-hoc CSV diagnostics.
+    private const int SwitchWindowBefore = 10;
+    private const int SwitchWindowAfter  = 10;
+    private readonly Queue<FrameSnap> _snapBuffer = new();
+    private readonly List<SwitchTrace> _pendingSwitchTraces = new();
+    private int _switchTracesWritten;
+    /// <summary>Directory to write per-switch diagnostic CSVs into. Null disables CSV output.</summary>
+    public string? SwitchTracePath { get; set; }
 
     public ScenarioMetricsRecorder(
         string scenario,
@@ -160,18 +181,34 @@ public sealed class ScenarioMetricsRecorder
         // Track when the scenario deliberately hides a target (Visible=false) so we
         // can distinguish a persisted/extrapolated track (correct) from a ghost track
         // that outlives the allowed persistence window (failure).
+        //
+        // ID tracking uses an explicit state machine rather than always overwriting
+        // _trackIdBeforeOcclusion — overwriting on every match would record the ID
+        // from the last visible frame before occlusion ended, not the frame it began.
+        bool prevWasOccluded = _wasOccluded;
         bool anyInvisible = invisibleTargets.Length > 0;
+
         if (anyInvisible)
         {
             _occlusionFrames++;
             _occlusionStartedAt ??= timestamp;
+            if (!prevWasOccluded)
+            {
+                // Entering occlusion: freeze the current track IDs.
+                _trackIdAtOcclusionStart = null;
+                foreach (ArenaGroundTruth t in invisibleTargets)
+                    if (_lastTrackByTarget.TryGetValue(t.Id, out int id))
+                        _trackIdAtOcclusionStart = id;
+            }
             _wasOccluded = true;
         }
-        else if (_wasOccluded)
+        else if (prevWasOccluded)
         {
-            // Targets just became visible again — note track ID for preservation check.
+            // Exiting occlusion: arm the reappearance watcher.
             _wasOccluded = false;
             _occlusionStartedAt = null;
+            _awaitingFirstReappearanceMatch = true;
+            _countingReacquisitionFrames = true;
         }
 
         // ── Ambiguity detection ────────────────────────────────────────────────
@@ -197,6 +234,9 @@ public sealed class ScenarioMetricsRecorder
         // distance across all pairs simultaneously, giving valid IS counts.
         int[] assignment = HungarianAssign(visibleTargets, detections, _matchRadiusPixels);
 
+        // Build a snapshot now (assignment is ready) for the ring buffer and switch traces.
+        FrameSnap snap = new(_frames, timestamp, visibleTargets, detections.ToArray(), assignment);
+
         var matchedDetections = new HashSet<int>();
         for (int ti = 0; ti < visibleTargets.Length; ti++)
         {
@@ -211,6 +251,9 @@ public sealed class ScenarioMetricsRecorder
                     _lostAtByTarget[target.Id] = timestamp;
                     _trackLosses++;
                 }
+                // Count frames a reappeared-but-not-yet-matched target stays unmatched.
+                if (_countingReacquisitionFrames)
+                    _reacquisitionFrameCount++;
                 continue;
             }
 
@@ -222,14 +265,33 @@ public sealed class ScenarioMetricsRecorder
             {
                 _identitySwitches++;
                 if (!frameIsAmbiguous)
+                {
                     _identitySwitchesOutsideAmbiguity++;
-
-                // If the ID changed on first reappearance after occlusion, preservation fails.
-                if (_lastTrackIdBeforeOcclusion.HasValue)
-                    _trackIdPreservedAfterOcclusion = false;
+                    // Capture a diagnostic CSV window around this switch event.
+                    var trace = new SwitchTrace
+                    {
+                        TargetId = target.Id,
+                        OldTrackId = previousTrack,
+                        NewTrackId = match.TrackId,
+                        SwitchFrameIndex = _frames,
+                    };
+                    foreach (FrameSnap s in _snapBuffer)
+                        trace.Rows.Add((s, "before"));
+                    trace.Rows.Add((snap, "switch"));
+                    _pendingSwitchTraces.Add(trace);
+                }
             }
             _lastTrackByTarget[target.Id] = match.TrackId;
-            _lastTrackIdBeforeOcclusion = match.TrackId;
+
+            // First match after the target reappeared from occlusion.
+            if (_awaitingFirstReappearanceMatch)
+            {
+                _awaitingFirstReappearanceMatch = false;
+                _countingReacquisitionFrames = false;
+                _firstTrackIdAfterOcclusion = match.TrackId;
+                if (_trackIdAtOcclusionStart.HasValue && _trackIdAtOcclusionStart.Value != match.TrackId)
+                    _trackIdPreservedAfterOcclusion = false;
+            }
 
             if (_lostAtByTarget.Remove(target.Id, out DateTime lostAt))
                 _reacquisitionMs.Add(Math.Max(0, (timestamp - lostAt).TotalMilliseconds));
@@ -269,6 +331,7 @@ public sealed class ScenarioMetricsRecorder
                 else
                 {
                     _falsePositives++;
+                    _spuriousFPDuringOcclusion++;
                 }
             }
         }
@@ -276,7 +339,89 @@ public sealed class ScenarioMetricsRecorder
         {
             _falsePositives += unmatched;
         }
+
+        // ── Switch trace ring buffer ──────────────────────────────────────────
+        // Keep the last SwitchWindowBefore frames available for trace capture.
+        _snapBuffer.Enqueue(snap);
+        while (_snapBuffer.Count > SwitchWindowBefore) _snapBuffer.Dequeue();
+
+        // Feed current frame to any pending after-window captures.
+        for (int pi = _pendingSwitchTraces.Count - 1; pi >= 0; pi--)
+        {
+            SwitchTrace pt = _pendingSwitchTraces[pi];
+            if (snap.FrameIndex <= pt.SwitchFrameIndex) continue;
+            pt.Rows.Add((snap, "after"));
+            pt.AfterRemaining--;
+            if (pt.AfterRemaining <= 0)
+            {
+                FlushSwitchTrace(pt);
+                _switchTracesWritten++;
+                _pendingSwitchTraces.RemoveAt(pi);
+            }
+        }
     }
+
+    private void FlushSwitchTrace(SwitchTrace trace)
+    {
+        if (SwitchTracePath == null) return;
+        try
+        {
+            Directory.CreateDirectory(SwitchTracePath);
+            string safeScenario = string.Concat(_scenario.Select(c => char.IsLetterOrDigit(c) ? c : '_'));
+            string file = Path.Combine(SwitchTracePath,
+                $"{safeScenario}_{trace.TargetId}_sw{_switchTracesWritten + 1}_old{trace.OldTrackId}_new{trace.NewTrackId}.csv");
+            var sb = new StringBuilder();
+            sb.AppendLine("FrameIndex,Role,Timestamp,TargetId,TargetX,TargetY,AssignedTrackId,TrackX,TrackY,DistancePx,IsExtrapolated,ObsAgeMs,GruX,GruY,GruErrPx");
+            foreach ((FrameSnap s, string role) in trace.Rows)
+            {
+                string ts = s.Timestamp.ToString("o", System.Globalization.CultureInfo.InvariantCulture);
+                for (int ti = 0; ti < s.VisibleTargets.Length; ti++)
+                {
+                    ArenaGroundTruth gt = s.VisibleTargets[ti];
+                    int di = s.Assignment[ti];
+                    if (di >= 0 && di < s.Detections.Length)
+                    {
+                        ArenaDetection d = s.Detections[di];
+                        double dist = Distance(gt.Center, d.Center);
+                        sb.AppendLine(string.Join(',',
+                            s.FrameIndex, role, ts, gt.Id,
+                            Fmt(gt.Center.X), Fmt(gt.Center.Y),
+                            d.TrackId,
+                            Fmt(d.Center.X), Fmt(d.Center.Y),
+                            Fmt(dist), d.IsExtrapolated, Fmt(d.ObservationAgeMs),
+                            d.GruPredictedCenter.HasValue ? Fmt(d.GruPredictedCenter.Value.X) : "",
+                            d.GruPredictedCenter.HasValue ? Fmt(d.GruPredictedCenter.Value.Y) : "",
+                            d.GruPredictedCenter.HasValue ? Fmt(Distance(gt.Center, d.GruPredictedCenter.Value)) : ""));
+                    }
+                    else
+                    {
+                        sb.AppendLine(string.Join(',',
+                            s.FrameIndex, role, ts, gt.Id,
+                            Fmt(gt.Center.X), Fmt(gt.Center.Y),
+                            "MISS", "", "", "", "", "", "", "", ""));
+                    }
+                }
+                // Unmatched detections.
+                var matched = new HashSet<int>(s.Assignment.Where(x => x >= 0));
+                for (int di = 0; di < s.Detections.Length; di++)
+                {
+                    if (matched.Contains(di)) continue;
+                    ArenaDetection d = s.Detections[di];
+                    sb.AppendLine(string.Join(',',
+                        s.FrameIndex, role, ts, "FP", "", "",
+                        d.TrackId, Fmt(d.Center.X), Fmt(d.Center.Y),
+                        "", d.IsExtrapolated, Fmt(d.ObservationAgeMs),
+                        d.GruPredictedCenter.HasValue ? Fmt(d.GruPredictedCenter.Value.X) : "",
+                        d.GruPredictedCenter.HasValue ? Fmt(d.GruPredictedCenter.Value.Y) : "",
+                        ""));
+                }
+            }
+            File.WriteAllText(file, sb.ToString());
+        }
+        catch (IOException) { /* Non-fatal: diagnostics should not crash the benchmark. */ }
+    }
+
+    private static string Fmt(double v) => v.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
 
     public ScenarioMetricsSummary Summarize() => new(
         _scenario,
@@ -313,8 +458,30 @@ public sealed class ScenarioMetricsRecorder
         TrackPresentDuringOcclusionFrames:  _trackPresentDuringOcclusion,
         GhostFramesAfterPersistenceWindow:  _ghostFramesAfterWindow,
         TrackIdPreservedAfterOcclusion:     _trackIdPreservedAfterOcclusion,
+        OldTrackIdAtOcclusionStart:         _trackIdAtOcclusionStart ?? 0,
+        NewTrackIdAtFirstReappearance:      _firstTrackIdAfterOcclusion ?? 0,
+        ReacquisitionFrameCount:            _reacquisitionFrameCount,
+        SpuriousFPDuringOcclusion:          _spuriousFPDuringOcclusion,
         AmbiguousIdentityFrames:            _ambiguousIdentityFrames,
-        IdentitySwitchesOutsideAmbiguity:   _identitySwitchesOutsideAmbiguity);
+        IdentitySwitchesOutsideAmbiguity:   _identitySwitchesOutsideAmbiguity,
+        SwitchTracesWritten:                _switchTracesWritten);
+
+    private sealed record FrameSnap(
+        int FrameIndex,
+        DateTime Timestamp,
+        ArenaGroundTruth[] VisibleTargets,
+        ArenaDetection[] Detections,
+        int[] Assignment);
+
+    private sealed class SwitchTrace
+    {
+        public string TargetId = "";
+        public int OldTrackId;
+        public int NewTrackId;
+        public int SwitchFrameIndex;
+        public List<(FrameSnap Snap, string Role)> Rows = new();
+        public int AfterRemaining = SwitchWindowAfter;
+    }
 
     /// <summary>
     /// Munkres (Hungarian) algorithm — O(n³) square-matrix variant.

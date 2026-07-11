@@ -257,7 +257,7 @@ namespace Aimmy2.AILogic
         }
     }
 
-    internal static class HungarianSolver
+    public static class HungarianSolver
     {
         /// <summary>Returns assigned column per row for a square cost matrix.</summary>
         public static int[] Solve(double[,] cost)
@@ -266,7 +266,7 @@ namespace Aimmy2.AILogic
             if (n != cost.GetLength(1))
                 throw new ArgumentException("Hungarian solver expects a square matrix.", nameof(cost));
 
-            // 1-indexed implementation of the O(n^3) shortest augmenting path algorithm.
+            // 1-indexed O(n³) shortest augmenting path algorithm.
             var u = new double[n + 1];
             var v = new double[n + 1];
             var p = new int[n + 1];
@@ -278,13 +278,14 @@ namespace Aimmy2.AILogic
                 int j0 = 0;
                 var minv = Enumerable.Repeat(double.PositiveInfinity, n + 1).ToArray();
                 var used = new bool[n + 1];
+                bool augmentingPathFound = false;
 
                 do
                 {
                     used[j0] = true;
                     int i0 = p[j0];
                     double delta = double.PositiveInfinity;
-                    int j1 = 0;
+                    int j1 = -1;  // -1 = no reachable column found
                     for (int j = 1; j <= n; j++)
                     {
                         if (used[j])
@@ -301,6 +302,10 @@ namespace Aimmy2.AILogic
                             j1 = j;
                         }
                     }
+                    // All remaining columns exhausted without finding a reachable one.
+                    // This happens when every cost entry for this row is at the guard value
+                    // (e.g. all-infinity). Break without corrupting u/v.
+                    if (j1 < 0) break;
                     for (int j = 0; j <= n; j++)
                     {
                         if (used[j])
@@ -314,8 +319,12 @@ namespace Aimmy2.AILogic
                         }
                     }
                     j0 = j1;
+                    if (p[j0] == 0) augmentingPathFound = true;
                 }
                 while (p[j0] != 0);
+
+                // Only walk the augmenting path when we actually reached a free column.
+                if (!augmentingPathFound) continue;
 
                 do
                 {

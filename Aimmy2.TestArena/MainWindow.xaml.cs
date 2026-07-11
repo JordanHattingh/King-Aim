@@ -132,7 +132,10 @@ namespace Aimmy2.TestArena
             _metricsRecorder = new ScenarioMetricsRecorder(
                 kind.ToString(), kind,
                 detectorExecuted: detectorExecuted,
-                noiseConfig: noiseConfig);
+                noiseConfig: noiseConfig)
+            {
+                SwitchTracePath = Path.Combine(_reportDirectory, "switch_traces"),
+            };
 
             foreach (var target in _scenario.Targets)
             {

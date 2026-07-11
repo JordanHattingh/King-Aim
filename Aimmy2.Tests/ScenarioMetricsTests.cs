@@ -1,5 +1,6 @@
 using System.Drawing;
 using System.IO;
+using Aimmy2.AILogic;
 using Aimmy2.TestArena;
 using Xunit;
 
@@ -155,6 +156,72 @@ public sealed class ScenarioMetricsTests
         var s = recorder.Summarize();
         Assert.Equal(2, s.FalsePositives);
         Assert.Equal(0, s.MissedDetections);
+    }
+
+    // ── Production HungarianSolver unit tests ────────────────────────────
+
+    [Fact]
+    public void ProdHungarian_1x1_AssignsOnly()
+    {
+        int[] result = HungarianSolver.Solve(new double[,] { { 5.0 } });
+        Assert.Equal(new[] { 0 }, result);
+    }
+
+    [Fact]
+    public void ProdHungarian_2x2_GlobalMinNotGreedy()
+    {
+        // Greedy (row-by-row) would assign row0→col0 (cost 1), forcing row1→col1 (cost 100).
+        // Global optimum is row0→col1 (cost 2), row1→col0 (cost 2). Total 4 vs greedy 101.
+        var cost = new double[,] { { 1, 2 }, { 2, 100 } };
+        int[] result = HungarianSolver.Solve(cost);
+        Assert.Equal(1, result[0]);  // row 0 → col 1
+        Assert.Equal(0, result[1]);  // row 1 → col 0
+    }
+
+    [Fact]
+    public void ProdHungarian_3x3_OptimalAssignment()
+    {
+        // All 6 permutations: min is (row0→col1, row1→col0, row2→col2) = 1+2+2 = 5.
+        var cost = new double[,]
+        {
+            { 4, 1, 3 },
+            { 2, 0, 5 },
+            { 3, 2, 2 },
+        };
+        int[] result = HungarianSolver.Solve(cost);
+        double totalCost = cost[0, result[0]] + cost[1, result[1]] + cost[2, result[2]];
+        Assert.Equal(5.0, totalCost, 6);  // optimal = 1+2+2 = 5
+    }
+
+    [Fact]
+    public void ProdHungarian_AllInfinity_NeitherCrashNorInfiniteLoop()
+    {
+        // Cost matrix padded entirely with UnmatchedCost (which is float, not +inf).
+        // In production this never happens (UnmatchedCost = 1.25 is finite), but the
+        // solver must not crash or loop when called with all-positive-infinity entries.
+        const double INF = double.PositiveInfinity;
+        var cost = new double[,] { { INF, INF }, { INF, INF } };
+        int[] result = HungarianSolver.Solve(cost);
+        // Solver may assign any valid permutation (all costs equal) — just must return
+        // without crashing and produce a valid array of length 2.
+        Assert.Equal(2, result.Length);
+    }
+
+    [Fact]
+    public void ProdHungarian_SymmetricCosts_AssignmentIsValid()
+    {
+        // All off-diagonal entries are large; diagonal is cheap.
+        // Expect identity assignment: row i → col i.
+        var cost = new double[,]
+        {
+            { 0.1, 1.25, 1.25 },
+            { 1.25, 0.1, 1.25 },
+            { 1.25, 1.25, 0.1 },
+        };
+        int[] result = HungarianSolver.Solve(cost);
+        Assert.Equal(0, result[0]);
+        Assert.Equal(1, result[1]);
+        Assert.Equal(2, result[2]);
     }
 
     [Fact]
