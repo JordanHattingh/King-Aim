@@ -39,11 +39,12 @@ public sealed record ScenarioMetricsSummary(
     string NoiseProfile,
     bool   InferenceMetricsApplicable,
     int    RandomSeed,
-    double PositionNoiseSigmaPx,
+    string NoiseDistribution,
+    double PositionNoiseMaxPx,
     double SizeNoisePercent,
     double DropProbabilityPct,
     int    FalsePositivesPerFrame,
-    int    ContiguousOcclusionPeriodFrames,
+    int    ContiguousOcclusionStartFrame,
     int    ContiguousOcclusionDurationFrames,
     // Metrics.
     int    Frames,
@@ -126,22 +127,22 @@ public sealed class ScenarioMetricsRecorder
         foreach (ArenaDetection detection in detections)
             AddFinite(_observationAges, detection.ObservationAgeMs);
 
-        var available = new HashSet<int>(Enumerable.Range(0, detections.Count));
-        foreach (ArenaGroundTruth target in targets.Where(target => target.Visible))
-        {
-            int bestIndex = -1;
-            double bestDistance = double.MaxValue;
-            foreach (int index in available)
-            {
-                double distance = Distance(target.Center, detections[index].Center);
-                if (distance < bestDistance)
-                {
-                    bestDistance = distance;
-                    bestIndex = index;
-                }
-            }
+        ArenaGroundTruth[] visibleTargets = targets.Where(t => t.Visible).ToArray();
 
-            if (bestIndex < 0 || bestDistance > _matchRadiusPixels)
+        // Global one-to-one assignment via the Hungarian algorithm.
+        // Greedy target-by-target selection can pair Target A to the nearer of two
+        // detections in a crossing scenario, forcing Target B onto the wrong track and
+        // producing a spurious identity switch.  Global assignment minimises total
+        // distance across all pairs simultaneously, giving valid IS counts.
+        int[] assignment = HungarianAssign(visibleTargets, detections, _matchRadiusPixels);
+
+        var matchedDetections = new HashSet<int>();
+        for (int ti = 0; ti < visibleTargets.Length; ti++)
+        {
+            ArenaGroundTruth target = visibleTargets[ti];
+            int di = assignment[ti];
+
+            if (di < 0)
             {
                 _misses++;
                 if (_lastTrackByTarget.ContainsKey(target.Id) && !_lostAtByTarget.ContainsKey(target.Id))
@@ -152,8 +153,10 @@ public sealed class ScenarioMetricsRecorder
                 continue;
             }
 
-            ArenaDetection match = detections[bestIndex];
-            available.Remove(bestIndex);
+            ArenaDetection match = detections[di];
+            matchedDetections.Add(di);
+            double bestDistance = Distance(target.Center, match.Center);
+
             if (_lastTrackByTarget.TryGetValue(target.Id, out int previousTrack) && previousTrack != match.TrackId)
                 _identitySwitches++;
             _lastTrackByTarget[target.Id] = match.TrackId;
@@ -164,7 +167,7 @@ public sealed class ScenarioMetricsRecorder
             if (match.GruPredictedCenter is PointF prediction)
                 _gruErrors.Add(Distance(target.Center, prediction));
         }
-        _falsePositives += available.Count;
+        _falsePositives += detections.Count - matchedDetections.Count;
     }
 
     public ScenarioMetricsSummary Summarize() => new(
@@ -176,11 +179,12 @@ public sealed class ScenarioMetricsRecorder
         NoiseProfile:                      _noiseConfig?.ProfileName ?? "N/A",
         InferenceMetricsApplicable:        _detectorExecuted,
         RandomSeed:                        _noiseConfig?.Seed ?? 0,
-        PositionNoiseSigmaPx:              _noiseConfig?.PositionNoisePx ?? 0,
+        NoiseDistribution:                 _noiseConfig != null ? "Uniform" : "N/A",
+        PositionNoiseMaxPx:                _noiseConfig?.PositionNoiseMaxPx ?? 0,
         SizeNoisePercent:                  (_noiseConfig?.SizeNoise ?? 0) * 100,
         DropProbabilityPct:                (_noiseConfig?.DropProbability ?? 0) * 100,
         FalsePositivesPerFrame:            _noiseConfig?.FalsePositiveCount ?? 0,
-        ContiguousOcclusionPeriodFrames:   _noiseConfig?.ContiguousOcclusionPeriodFrames ?? 0,
+        ContiguousOcclusionStartFrame:     _noiseConfig?.ContiguousOcclusionStartFrame ?? 0,
         ContiguousOcclusionDurationFrames: _noiseConfig?.ContiguousOcclusionDurationFrames ?? 0,
         Frames:                   _frames,
         DetectionCount:           _detections,
@@ -197,6 +201,114 @@ public sealed class ScenarioMetricsRecorder
         InferenceP99Ms:           Percentile(_inferenceMs, 0.99),
         FrameAgeP95Ms:            Percentile(_frameAgeMs, 0.95),
         CaptureFpsP50:            Percentile(_captureFps, 0.50));
+
+    /// <summary>
+    /// Munkres (Hungarian) algorithm — O(n³) square-matrix variant.
+    /// Returns assignment[ti] = detection index for each visible target (ti), or -1 if
+    /// no detection is within <paramref name="matchRadius"/>.
+    /// Ground-truth IDs are never passed to the tracker; this lives only in the evaluator.
+    /// </summary>
+    private static int[] HungarianAssign(
+        ArenaGroundTruth[] targets,
+        IReadOnlyList<ArenaDetection> detections,
+        double matchRadius)
+    {
+        int n = targets.Length;
+        int m = detections.Count;
+        int[] result = new int[n];
+
+        if (n == 0 || m == 0)
+        {
+            Array.Fill(result, -1);
+            return result;
+        }
+
+        // Build cost matrix (size n×m). Pairs beyond matchRadius get a large sentinel.
+        const double INF = 1e9;
+        int sz = Math.Max(n, m);
+        double[,] cost = new double[sz, sz];
+        for (int i = 0; i < sz; i++)
+            for (int j = 0; j < sz; j++)
+                cost[i, j] = INF;
+
+        for (int i = 0; i < n; i++)
+            for (int j = 0; j < m; j++)
+            {
+                double d = Distance(targets[i].Center, detections[j].Center);
+                cost[i, j] = d <= matchRadius ? d : INF;
+            }
+
+        // Standard O(n³) Hungarian implementation.
+        double[] u = new double[sz + 1];
+        double[] v = new double[sz + 1];
+        int[] p = new int[sz + 1];      // col→row assignment
+        int[] way = new int[sz + 1];
+
+        for (int i = 1; i <= sz; i++)
+        {
+            p[0] = i;
+            int j0 = 0;
+            double[] minVal = new double[sz + 1];
+            bool[] used = new bool[sz + 1];
+            Array.Fill(minVal, INF);
+
+            do
+            {
+                used[j0] = true;
+                int i0 = p[j0], j1 = -1;
+                double delta = INF;
+
+                for (int j = 1; j <= sz; j++)
+                {
+                    if (used[j]) continue;
+                    double cur = cost[i0 - 1, j - 1] - u[i0] - v[j];
+                    if (cur < minVal[j])
+                    {
+                        minVal[j] = cur;
+                        way[j] = j0;
+                    }
+                    if (minVal[j] < delta)
+                    {
+                        delta = minVal[j];
+                        j1 = j;
+                    }
+                }
+
+                for (int j = 0; j <= sz; j++)
+                {
+                    if (used[j]) { u[p[j]] += delta; v[j] -= delta; }
+                    else minVal[j] -= delta;
+                }
+                j0 = j1;
+            }
+            while (p[j0] != 0);
+
+            do
+            {
+                int j1 = way[j0];
+                p[j0] = p[j1];
+                j0 = j1;
+            }
+            while (j0 != 0);
+        }
+
+        // Decode: for each target row find its assigned detection column.
+        int[] colForRow = new int[sz + 1];
+        for (int j = 1; j <= sz; j++)
+            if (p[j] > 0 && p[j] <= sz)
+                colForRow[p[j]] = j;
+
+        for (int i = 0; i < n; i++)
+        {
+            int di = colForRow[i + 1] - 1;
+            if (di < 0 || di >= m || cost[i, di] >= INF)
+                result[i] = -1;
+            else
+                result[i] = di;
+        }
+
+        return result;
+    }
 
     private static double Distance(PointF a, PointF b)
     {
