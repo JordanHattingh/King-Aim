@@ -255,4 +255,53 @@ public sealed class PipelineGamepadAssistTests
         Assert.InRange(rx, -1f, 1f);
         Assert.InRange(ry, -1f, 1f);
     }
+
+    // ── Enable gating ─────────────────────────────────────────────────────────
+
+    [Fact]
+    public void GamepadAssistEnabled_False_ReturnsZeroAndResetsController()
+    {
+        var runner = MakeRunner(new GamepadAssistController { MaxSlewRate = 100f });
+
+        // Build up assist state with a right-side target.
+        var focus = FocusAt(1440f, 540f);
+        float rx = 0f;
+        for (int i = 0; i < 10; i++)
+            (rx, _) = runner.GetGamepadAssistDelta(focus, 1920, 1080, 1.0 / 60.0);
+        Assert.True(rx > 0f, "Pre-condition: assist should be positive before disable");
+
+        // Disable assist.
+        runner.GamepadAssistEnabled = false;
+        (rx, _) = runner.GetGamepadAssistDelta(focus, 1920, 1080, 1.0 / 60.0);
+        Assert.Equal(0f, rx);
+        Assert.False(runner.AssistIsActive);
+
+        // Re-enable: controller was reset, so output should start from zero and build up.
+        runner.GamepadAssistEnabled = true;
+        (rx, _) = runner.GetGamepadAssistDelta(focus, 1920, 1080, 1.0 / 60.0);
+        // One frame from zero — slew-limited but direction must still be positive.
+        Assert.True(rx >= 0f, $"After re-enable, first frame rx should be ≥ 0, got {rx}");
+    }
+
+    [Fact]
+    public void AssistIsActive_FalseWhenOutputIsNearZero()
+    {
+        var runner = MakeRunner();
+
+        // No focus → controller output is zero → AssistIsActive should be false.
+        runner.GetGamepadAssistDelta(null, 1920, 1080, 1.0 / 60.0);
+        Assert.False(runner.AssistIsActive);
+    }
+
+    [Fact]
+    public void AssistIsActive_TrueWhenTargetIsOff_Center()
+    {
+        var runner = MakeRunner(new GamepadAssistController { MaxSlewRate = 100f });
+        var focus = FocusAt(1440f, 540f);  // strong right-side error
+
+        for (int i = 0; i < 10; i++)
+            runner.GetGamepadAssistDelta(focus, 1920, 1080, 1.0 / 60.0);
+
+        Assert.True(runner.AssistIsActive);
+    }
 }

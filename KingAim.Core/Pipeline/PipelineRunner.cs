@@ -53,7 +53,28 @@ public sealed class PipelineRunner
     private readonly IPointingAssistController   _pointing;
     private readonly IDriftCompensator           _drift;
     private readonly IGamepadAssistController    _gamepadAssist;
-    private readonly DiagnosticsService          _diagnostics;
+    private readonly IDiagnosticsService         _diagnostics;
+
+    // ── Gamepad assist state (written by gamepad loop, read by UI) ────────────
+    private volatile bool  _gamepadAssistEnabled     = true;
+    private volatile bool  _gamepadAssistWasEnabled  = false;
+    private volatile bool  _assistIsActive           = false;
+
+    /// <summary>
+    /// When false, <see cref="GetGamepadAssistDelta"/> returns (0,0) and resets the
+    /// PID controller. Set this from the UI enable toggle.
+    /// </summary>
+    public bool GamepadAssistEnabled
+    {
+        get => _gamepadAssistEnabled;
+        set => _gamepadAssistEnabled = value;
+    }
+
+    /// <summary>
+    /// True whenever the last <see cref="GetGamepadAssistDelta"/> call produced a
+    /// non-negligible assist output. Use this to drive a UI indicator.
+    /// </summary>
+    public bool AssistIsActive => _assistIsActive;
 
     public PipelineRunner(
         SafetyPolicy                 safety,
@@ -73,7 +94,7 @@ public sealed class PipelineRunner
         IPointingAssistController    pointing,
         IDriftCompensator            drift,
         IGamepadAssistController     gamepadAssist,
-        DiagnosticsService           diagnostics)
+        IDiagnosticsService          diagnostics)
     {
         _safety      = safety;
         _source      = source;
@@ -218,7 +239,20 @@ public sealed class PipelineRunner
     public (float AssistRx, float AssistRy) GetGamepadAssistDelta(
         TrackState? focus, int screenW, int screenH, double deltaSeconds)
     {
-        if (_safety.IsEmergencyDisabled) return (0f, 0f);
+        bool shouldAssist = !_safety.IsEmergencyDisabled && _gamepadAssistEnabled;
+        if (!shouldAssist)
+        {
+            // Reset PID on the first call after disabling so stale integral state
+            // doesn't produce a burst when re-enabled.
+            if (_gamepadAssistWasEnabled)
+            {
+                _gamepadAssist.Reset();
+                _gamepadAssistWasEnabled = false;
+            }
+            _assistIsActive = false;
+            return (0f, 0f);
+        }
+        _gamepadAssistWasEnabled = true;
 
         bool hasTarget = focus != null && !focus.IsLost;
         float errorX = 0f, errorY = 0f, velX = 0f, velY = 0f;
@@ -245,9 +279,13 @@ public sealed class PipelineRunner
 
         var (driftX, driftY) = _drift.Compensate(deltaSeconds);
 
-        return (
-            Math.Clamp(assistRx + driftX, -1f, 1f),
-            Math.Clamp(assistRy + driftY, -1f, 1f));
+        float outRx = Math.Clamp(assistRx + driftX, -1f, 1f);
+        float outRy = Math.Clamp(assistRy + driftY, -1f, 1f);
+
+        const float ActiveThreshold = 0.005f;
+        _assistIsActive = MathF.Abs(outRx) > ActiveThreshold || MathF.Abs(outRy) > ActiveThreshold;
+
+        return (outRx, outRy);
     }
 
     public void EmergencyStop()

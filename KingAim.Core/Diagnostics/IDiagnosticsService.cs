@@ -11,4 +11,5 @@ public interface IDiagnosticsService
     void RecordDroppedFrame();
     void RecordError(string message, Exception? ex = null);
     void SetHealthState(SystemHealthState state);
+    void UpdateTrackStats(int activeTracks, int? focusTrackId, float modelConfidence);
 }
