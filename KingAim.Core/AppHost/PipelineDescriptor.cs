@@ -27,7 +27,7 @@ public sealed class PipelineDescriptor
     public required IFramePreprocessor   Preprocessor { get; init; }
     public required IInferenceEngine     Engine       { get; init; }
     public required IModelDecoder        Decoder      { get; init; }
-    public required NmsParameters        Nms          { get; init; }
+    public required PoseDecoderOptions   Nms          { get; init; }
     public required IGeometryValidator   Validator    { get; init; }
     public required ITrackerService      Tracker      { get; init; }
     public required ISceneAnalyzer       Scene        { get; init; }

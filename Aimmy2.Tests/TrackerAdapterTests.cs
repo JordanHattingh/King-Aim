@@ -139,7 +139,30 @@ public sealed class TrackerAdapterTests
     }
 
     // ---------------------------------------------------------------------------
-    // Test 6 — Adapter output matches TrackManager baseline for a known sequence
+    // Test 6 — Zero timestamp delta produces finite velocity (no division-by-zero)
+    // ---------------------------------------------------------------------------
+
+    [Fact]
+    public void TrackerAdapter_ZeroTimestampDeltaDoesNotProduceInvalidVelocity()
+    {
+        var adapter = new TrackerAdapter(W, H);
+
+        // Feed a detection twice with the same timestamp (simulates duplicate codec ts)
+        long sameTs = MakeTs(0);
+        var det = MakeDetection(460, 250, 560, 480);
+
+        adapter.Update([det], frameId: 1, captureTimestampUs: sameTs);
+        var tracks = adapter.Update([det], frameId: 2, captureTimestampUs: sameTs);
+
+        // Velocity must not be NaN or Infinity regardless of zero delta
+        Assert.NotEmpty(tracks);
+        var t = tracks[0];
+        Assert.True(float.IsFinite(t.VelocityX), $"VelocityX is not finite: {t.VelocityX}");
+        Assert.True(float.IsFinite(t.VelocityY), $"VelocityY is not finite: {t.VelocityY}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Test 7 — Adapter output matches TrackManager baseline for a known sequence
     // ---------------------------------------------------------------------------
 
     [Fact]

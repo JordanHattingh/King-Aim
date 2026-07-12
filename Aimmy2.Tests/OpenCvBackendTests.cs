@@ -2,6 +2,7 @@ using System.IO;
 using System.Security.Cryptography;
 using Aimmy2.Capture;
 using KingAim.Core.Capture;
+using KingAim.Core.Capture.Sources;
 using OpenCvSharp;
 using Xunit;
 
@@ -215,6 +216,29 @@ public sealed class OpenCvBackendTests : IClassFixture<OpenCvBackendTests.VideoF
         var b = _fx.OpenBackend();
         b.Dispose();
         Assert.Throws<ObjectDisposedException>(() => b.TryReadFrame(out _, out _));
+    }
+
+    [Fact]
+    public async Task OpenCvBackend_EffectiveTimestampsAreStrictlyIncreasing()
+    {
+        // RecordedVideoSource normalizes raw codec timestamps (which may duplicate at
+        // MJPG's millisecond resolution) into a strictly-increasing pipeline timestamp.
+        using var backend = _fx.OpenBackend();
+        var source = new RecordedVideoSource(backend, PlaybackTimingMode.ManualStep);
+        await source.StartAsync();
+
+        long prevEffective = -1;
+        for (int i = 0; i < _fx.FrameCount; i++)
+        {
+            source.AdvanceFrame();
+            var frame = source.GetLatestFrame();
+            if (frame == null) break;
+
+            Assert.True(frame.CaptureTimestampUs > prevEffective,
+                $"Frame {i}: effective ts {frame.CaptureTimestampUs} not > prev {prevEffective}");
+            prevEffective = frame.CaptureTimestampUs;
+        }
+        Assert.True(prevEffective > 0, "No frames produced");
     }
 
     // =========================================================================

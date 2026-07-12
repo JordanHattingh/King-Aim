@@ -53,7 +53,7 @@ def main() -> None:
     parser.add_argument("--keypoint-count", type=int, default=4)
     parser.add_argument(
         "--keypoint-names",
-        default="head,neck,chest,hip",
+        default="head,neck,upper_chest,hip",
         help="Comma-separated keypoint names in exported channel order",
     )
     parser.add_argument(

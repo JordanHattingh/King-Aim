@@ -18,6 +18,13 @@ from contracts import yolo_keypoint_visibility_rows, yolo_output_channel_count
 
 
 class FoundationToolTests(unittest.TestCase):
+    @staticmethod
+    def write_pose_yaml(root: Path) -> None:
+        (root / "kingaim_pose.yaml").write_text(
+            "kpt_shape: [4, 3]\nnames:\n  0: enemy\nkpt_names:\n  0: [head, neck, upper_chest, hip]\n",
+            encoding="utf-8",
+        )
+
     def test_hash_tree_is_stable_and_content_sensitive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -41,6 +48,7 @@ class FoundationToolTests(unittest.TestCase):
     def test_pose_audit_accepts_valid_four_keypoint_row(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            self.write_pose_yaml(root)
             (root / "images/train").mkdir(parents=True)
             (root / "labels/train").mkdir(parents=True)
             (root / "images/train/sample.jpg").write_bytes(b"image")
@@ -51,11 +59,22 @@ class FoundationToolTests(unittest.TestCase):
     def test_pose_audit_rejects_wrong_field_count(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            self.write_pose_yaml(root)
             (root / "images/train").mkdir(parents=True)
             (root / "labels/train").mkdir(parents=True)
             (root / "images/train/sample.jpg").write_bytes(b"image")
             (root / "labels/train/sample.txt").write_text("0 0.5 0.5\n", encoding="utf-8")
             self.assertEqual("field_count", audit(root)[0]["code"])
+
+    def test_pose_audit_identifies_detector_box_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_pose_yaml(root)
+            (root / "images/train").mkdir(parents=True)
+            (root / "labels/train").mkdir(parents=True)
+            (root / "images/train/sample.jpg").write_bytes(b"image")
+            (root / "labels/train/sample.txt").write_text("0 0.5 0.5 0.4 0.8\n", encoding="utf-8")
+            self.assertEqual("detector_annotation_not_pose", audit(root)[0]["code"])
 
     def test_parity_contract_supports_detector_without_visibility_rows(self) -> None:
         self.assertEqual(5, yolo_output_channel_count("detect", class_count=1, keypoint_count=0))

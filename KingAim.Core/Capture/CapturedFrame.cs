@@ -6,8 +6,11 @@ namespace KingAim.Core.Capture;
 /// </summary>
 public sealed class CapturedFrame : IDisposable
 {
-    public long   FrameId           { get; init; }
-    public long   CaptureTimestampUs { get; init; }  // microseconds since epoch (UTC)
+    public long   FrameId            { get; init; }
+    /// <summary>Raw codec timestamp (µs). May duplicate at low-res codecs (e.g. MJPG ms resolution).</summary>
+    public long   SourceTimestampUs  { get; init; }
+    /// <summary>Normalized strictly-increasing pipeline timestamp (µs since epoch UTC).</summary>
+    public long   CaptureTimestampUs { get; init; }
     public int    SourceWidth        { get; init; }
     public int    SourceHeight       { get; init; }
     public string PixelFormat        { get; init; } = "BGR24";

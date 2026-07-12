@@ -21,7 +21,7 @@ test: images/test
 kpt_shape: [4, 3]
 flip_idx: [0, 1, 2, 3]
 names:
-  0: human
+  0: enemy
 kpt_names:
   0: [head, neck, upper_chest, hip]
 """

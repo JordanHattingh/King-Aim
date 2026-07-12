@@ -32,11 +32,13 @@ public sealed class RecordedVideoSource : IFrameSource, IDisposable
     private bool  _running;
     private bool  _disposed;
     private long  _nextFrameId;
-    private bool  _pendingAdvance;      // for ManualStep
+    private bool  _pendingAdvance;         // for ManualStep
     private byte[]? _currentPixels;
-    private long  _currentPresentationUs;
+    private long  _currentSourceUs;        // raw codec timestamp
+    private long  _currentEffectiveUs;     // normalized strictly-increasing timestamp
+    private long? _lastEffectiveUs;        // previous effective timestamp for monotonicity
     private long  _lastDeliveryUs;
-    private CapturedFrame? _cachedFrame; // returned until next AdvanceFrame()
+    private CapturedFrame? _cachedFrame;   // returned until next AdvanceFrame()
 
     public RecordedVideoSource(
         IVideoBackend backend,
@@ -61,11 +63,14 @@ public sealed class RecordedVideoSource : IFrameSource, IDisposable
         ThrowIfDisposed();
         if (!_backend.IsOpen)
             throw new InvalidOperationException("Video backend is not open. Call IVideoBackend.Open() first.");
-        _running        = true;
-        _pendingAdvance = false;
-        _currentPixels  = null;
-        _lastDeliveryUs = 0;
-        _cachedFrame    = null;
+        _running            = true;
+        _pendingAdvance     = false;
+        _currentPixels      = null;
+        _currentSourceUs    = 0;
+        _currentEffectiveUs = 0;
+        _lastEffectiveUs    = null;
+        _lastDeliveryUs     = 0;
+        _cachedFrame        = null;
         return Task.CompletedTask;
     }
 
@@ -87,9 +92,13 @@ public sealed class RecordedVideoSource : IFrameSource, IDisposable
         bool ok = _backend.Seek(frameIndex);
         if (ok)
         {
-            _currentPixels   = null;
-            _pendingAdvance  = false;
-            _lastDeliveryUs  = 0;
+            _currentPixels      = null;
+            _pendingAdvance     = false;
+            _currentSourceUs    = 0;
+            _currentEffectiveUs = 0;
+            _lastEffectiveUs    = null;
+            _lastDeliveryUs     = 0;
+            _cachedFrame        = null;
         }
         return ok;
     }
@@ -107,8 +116,9 @@ public sealed class RecordedVideoSource : IFrameSource, IDisposable
                 if (!_pendingAdvance) return _cachedFrame;
                 _pendingAdvance = false;
                 if (!_backend.TryReadFrame(out var mpx, out var mts)) { _running = false; return null; }
-                _currentPixels = mpx;
-                _currentPresentationUs = mts;
+                _currentPixels   = mpx;
+                _currentSourceUs = mts;
+                _currentEffectiveUs = NormalizeTimestamp(mts);
                 _cachedFrame = BuildFrame();
                 return _cachedFrame;
 
@@ -129,9 +139,10 @@ public sealed class RecordedVideoSource : IFrameSource, IDisposable
             case PlaybackTimingMode.AsFastAsPossible:
             default:
                 if (!_backend.TryReadFrame(out var px, out var ts)) { _running = false; return null; }
-                _currentPixels = px;
-                _currentPresentationUs = ts;
-                _lastDeliveryUs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000L;
+                _currentPixels      = px;
+                _currentSourceUs    = ts;
+                _currentEffectiveUs = NormalizeTimestamp(ts);
+                _lastDeliveryUs     = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000L;
                 return BuildFrame();
         }
     }
@@ -142,13 +153,28 @@ public sealed class RecordedVideoSource : IFrameSource, IDisposable
         return new CapturedFrame
         {
             FrameId            = id,
-            CaptureTimestampUs = _currentPresentationUs,
+            SourceTimestampUs  = _currentSourceUs,
+            CaptureTimestampUs = _currentEffectiveUs,
             SourceWidth        = _backend.Width,
             SourceHeight       = _backend.Height,
             PixelFormat        = "BGR24",
             SourceId           = "recorded_video",
             PixelData          = _currentPixels ?? [],
         };
+    }
+
+    /// <summary>
+    /// Returns a strictly-increasing effective timestamp even when the codec returns
+    /// duplicate or non-increasing millisecond values (e.g. MJPG at 30fps).
+    /// </summary>
+    private long NormalizeTimestamp(long rawUs)
+    {
+        long nominalIntervalUs = (long)(1_000_000.0 / (_backend.FrameRate > 0 ? _backend.FrameRate : 30.0));
+        long candidate = rawUs;
+        if (_lastEffectiveUs is long previous && candidate <= previous)
+            candidate = previous + nominalIntervalUs;
+        _lastEffectiveUs = candidate;
+        return candidate;
     }
 
     public void Dispose()

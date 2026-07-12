@@ -1,6 +1,6 @@
 # King Aim Pose Annotation Handbook
 
-King Aim uses one class, `human`, and four ordered midline keypoints: `head`, `neck`, `upper_chest`, `hip`. Never change the order between labels, YAML, manifests, exports, or the C# decoder.
+King Aim uses one class, `enemy`, and four ordered midline keypoints: `head`, `neck`, `upper_chest`, `hip`. Never change the order between labels, YAML, manifests, exports, or the C# decoder.
 
 ## Label contract
 
@@ -17,7 +17,7 @@ Each row is `class cx cy width height` followed by four `x y visibility` triples
 - For wall occlusion, label the visible body box and mark inferable hidden keypoints `1`; use `0` when inference is unreliable.
 - Head-only targets receive a tight visible box; hidden torso keypoints are `0` unless their position is genuinely inferable.
 - Overlapping people receive separate boxes and keypoints. Never merge two bodies into one label.
-- Friendly/enemy crossings remain `human`; semantic role is resolved outside the pose model.
+- Only reviewed enemies are positive in this dataset. Friendly/player semantics must not be relabeled into the frozen enemy class.
 - Dead bodies, viewmodel hands, mannequins, posters, HUD markers, and shadows are negative unless a future dataset policy explicitly changes their role.
 - Downed living players are positive and use the same anatomical definitions.
 

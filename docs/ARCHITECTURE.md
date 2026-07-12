@@ -4,4 +4,4 @@ King Aim separates perception, temporal state, semantic observations, and output
 
 The temporal contract is eight frames by eight features: normalized center, normalized size, confidence, observed mask, delta time, and age since the last real observation. Companion schemas are `track-motion-8x8-v2`, `detection-context-v2`, and `pointing-velocity-v1`. Incompatible schemas fail closed.
 
-The production pose contract is one `human` class with `head`, `neck`, `upper_chest`, and `hip` in that order. Friendly/enemy meaning is a separate semantic layer.
+The candidate pose contract is one `enemy` class with `head`, `neck`, `upper_chest`, and `hip` in that order.

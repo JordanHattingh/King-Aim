@@ -52,11 +52,11 @@ public sealed class OnnxInspectorTests
 
             byte[] model = Concat(
                 I64(1, 8),                     // ir_version
-                Msg(7, opset),                 // opset_imports
-                Msg(8, graph));                // graph
+                Msg(8, opset),                 // opset_import  (ModelProto field 8)
+                Msg(7, graph));                // graph         (ModelProto field 7)
 
             if (!string.IsNullOrEmpty(producerName))
-                model = Concat(model, Str(12, producerName));
+                model = Concat(model, Str(2, producerName)); // producer_name (field 2)
 
             return model;
         }
@@ -83,7 +83,7 @@ public sealed class OnnxInspectorTests
 
             byte[] graph  = Concat(parts.ToArray());
             byte[] opset  = Concat(Str(1, ""), I64(2, opsetVersion));
-            return Concat(I64(1, 8), Msg(7, opset), Msg(8, graph));
+            return Concat(I64(1, 8), Msg(8, opset), Msg(7, graph));
         }
 
         // ---- shape encoders ----

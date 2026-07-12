@@ -374,6 +374,36 @@ public sealed class RecordedVideoPipelineTests : IClassFixture<RecordedVideoPipe
     }
 
     [Fact]
+    public async Task RecordedPipeline_DuplicateSourceTimestampsDoNotBreakTracking()
+    {
+        // At MJPG / 30fps, consecutive raw codec timestamps can share the same millisecond value.
+        // RecordedVideoSource.NormalizeTimestamp() must ensure CaptureTimestampUs is strictly
+        // increasing regardless, so TrackerAdapter never receives a zero or negative frame delta.
+        using var pf = new PipelineFixture(_fx.VideoPath, _fx.Width, _fx.Height);
+        await pf.Source.StartAsync();
+        pf.Decoder.SetDetections([MakeDetection(_fx.Width, _fx.Height)]);
+
+        var frames = new List<KingAim.Core.Capture.CapturedFrame>();
+        while (frames.Count < _fx.FrameCount)
+        {
+            var r = await pf.Runner.TickAsync();
+            if (r.Skipped) break;
+            if (r.Frame != null) frames.Add(r.Frame!);
+        }
+
+        Assert.NotEmpty(frames);
+
+        // Effective timestamp must be strictly increasing (normalization guarantee)
+        for (int i = 1; i < frames.Count; i++)
+        {
+            long prev = frames[i - 1].CaptureTimestampUs;
+            long cur  = frames[i].CaptureTimestampUs;
+            Assert.True(cur > prev,
+                $"Frame {i}: CaptureTimestampUs not strictly increasing: {prev} → {cur}");
+        }
+    }
+
+    [Fact]
     public async Task RecordedPipeline_StaleFramesBehaviourCorrect()
     {
         using var pf = new PipelineFixture(_fx.VideoPath, _fx.Width, _fx.Height);

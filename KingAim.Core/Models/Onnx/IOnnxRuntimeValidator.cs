@@ -1,19 +1,22 @@
 namespace KingAim.Core.Models.Onnx;
 
 /// <summary>
-/// Validates that ORT can create a session for a given model and run a warm-up input.
-/// Separate from <see cref="IOnnxModelInspector"/>: the inspector reads metadata without
-/// loading the model; this validator proves the model can actually execute on the target EP.
+/// Validates that ORT can create a session, run warm-up inference, and collect
+/// output statistics for a given model on a specified execution provider.
+/// Separate from <see cref="IOnnxModelInspector"/>: the inspector reads graph
+/// metadata from protobuf without loading the model; this validator proves the
+/// model can actually execute on the target hardware.
 /// </summary>
 public interface IOnnxRuntimeValidator
 {
-    /// <summary>
-    /// Attempt to open a session for <paramref name="modelPath"/> on the specified
-    /// execution provider and run one warm-up pass with a zero-filled input tensor.
-    /// </summary>
-    RuntimeCompatibilityReport Validate(string modelPath, string executionProvider = "CPU");
+    RuntimeCompatibilityReport Validate(
+        string modelPath,
+        RuntimeValidationOptions? options = null,
+        CancellationToken cancellationToken = default);
 
-    /// <summary>Same as <see cref="Validate(string,string)"/> but for in-memory bytes.</summary>
-    RuntimeCompatibilityReport ValidateBytes(byte[] modelBytes, string executionProvider = "CPU",
-        string sourceName = "");
+    RuntimeCompatibilityReport ValidateBytes(
+        byte[] modelBytes,
+        RuntimeValidationOptions? options = null,
+        string sourceName = "",
+        CancellationToken cancellationToken = default);
 }

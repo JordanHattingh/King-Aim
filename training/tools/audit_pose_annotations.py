@@ -10,10 +10,29 @@ from pathlib import Path
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 SPLITS = ("train", "val", "test")
+KEYPOINT_NAMES = ("head", "neck", "upper_chest", "hip")
+
+
+def audit_dataset_yaml(root: Path) -> list[dict]:
+    yaml_path = root / "kingaim_pose.yaml"
+    if not yaml_path.is_file():
+        return [{"severity": "error", "code": "missing_dataset_yaml", "file": str(yaml_path), "detail": "pose dataset YAML is required"}]
+    import yaml
+    data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    issues: list[dict] = []
+    if data.get("kpt_shape") != [4, 3]:
+        issues.append({"severity": "error", "code": "kpt_shape", "file": str(yaml_path), "detail": "kpt_shape must be [4, 3]"})
+    names = data.get("names") or {}
+    if names.get(0, names.get("0")) != "enemy":
+        issues.append({"severity": "error", "code": "class_name", "file": str(yaml_path), "detail": "class 0 must be enemy"})
+    keypoint_names = data.get("kpt_names") or {}
+    if keypoint_names.get(0, keypoint_names.get("0")) != list(KEYPOINT_NAMES):
+        issues.append({"severity": "error", "code": "keypoint_order", "file": str(yaml_path), "detail": f"keypoints must be {list(KEYPOINT_NAMES)}"})
+    return issues
 
 
 def audit(root: Path, provenance: Path | None = None) -> list[dict]:
-    issues: list[dict] = []
+    issues: list[dict] = audit_dataset_yaml(root)
     image_by_key: dict[tuple[str, str], Path] = {}
     label_by_key: dict[tuple[str, str], Path] = {}
     for split in SPLITS:
@@ -38,10 +57,12 @@ def audit(root: Path, provenance: Path | None = None) -> list[dict]:
                 issues.append({"severity": "error", "code": "malformed", "file": str(label), "line": line_number, "detail": "non-numeric value"})
                 continue
             if len(values) != 17:
-                issues.append({"severity": "error", "code": "field_count", "file": str(label), "line": line_number, "detail": f"expected 17 fields, got {len(values)}"})
+                code = "detector_annotation_not_pose" if len(values) == 5 else "field_count"
+                detail = "five-field bounding-box annotation has no four-point pose data" if len(values) == 5 else f"expected 17 fields, got {len(values)}"
+                issues.append({"severity": "error", "code": code, "file": str(label), "line": line_number, "detail": detail})
                 continue
             if values[0] != 0:
-                issues.append({"severity": "error", "code": "class_id", "file": str(label), "line": line_number, "detail": "only class 0 human is allowed"})
+                issues.append({"severity": "error", "code": "class_id", "file": str(label), "line": line_number, "detail": "only class 0 enemy is allowed"})
             cx, cy, width, height = values[1:5]
             if any(value < 0 or value > 1 for value in values[1:5]) or width <= 0 or height <= 0:
                 issues.append({"severity": "error", "code": "invalid_box", "file": str(label), "line": line_number, "detail": "box must be normalized with positive size"})

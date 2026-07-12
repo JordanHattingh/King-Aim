@@ -87,28 +87,27 @@ internal static class OnnxProtobufParser
 
                 switch (field)
                 {
-                    case 7:  // opset_imports (OperatorSetIdProto)
+                    // ModelProto field numbers (onnx.proto):
+                    // 1=ir_version, 2=producer_name, 3=producer_version, 4=domain,
+                    // 5=model_version, 6=doc_string, 7=graph, 8=opset_import, 14=metadata_props
+                    case 8:  // opset_import (OperatorSetIdProto)
                         int v = ReadOpsetVersion(sub);
                         if (v > 0) result.OpsetVersion = v;
                         break;
-                    case 8:  // graph (GraphProto)
+                    case 7:  // graph (GraphProto)
                         ReadGraph(sub, result);
                         break;
                     case 14: // metadata_props (StringStringEntryProto)
                         ReadMetadataEntry(sub, result.Metadata);
                         break;
-                    case 12: // producer_name
+                    case 2:  // producer_name
                         result.Metadata["producer_name"] = ReadUtf8(sub);
                         break;
-                    case 13: // producer_version
+                    case 3:  // producer_version
                         result.Metadata["producer_version"] = ReadUtf8(sub);
                         break;
-                    case 2:  // domain
+                    case 4:  // domain
                         { var s = ReadUtf8(sub); if (!string.IsNullOrEmpty(s)) result.Metadata["domain"] = s; }
-                        break;
-                    case 4:  // model_version = int64 varint, skip below
-                        break;
-                    case 10: // graph_name is in graph, 10 = doc_string at model level — skip
                         break;
                 }
                 pos += len;

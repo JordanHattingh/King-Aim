@@ -33,9 +33,17 @@ public interface IModelDecoder
     IReadOnlyList<PoseDetection> Decode(InferenceOutput output, PreprocessingMetadata preprocessing);
 }
 
+[Obsolete("Use PoseDecoderOptions.")]
 public sealed class NmsParameters
 {
     public float ConfidenceThreshold { get; init; } = 0.25f;
     public float NmsIouThreshold     { get; init; } = 0.45f;
     public int   MaxDetections       { get; init; } = 300;
+
+    public PoseDecoderOptions ToPoseDecoderOptions() => new()
+    {
+        DetectionConfidenceThreshold = ConfidenceThreshold,
+        NmsIouThreshold              = NmsIouThreshold,
+        MaximumDetections            = MaxDetections,
+    };
 }

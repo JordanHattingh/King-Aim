@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install Python test dependencies
-        run: python -m pip install --disable-pip-version-check numpy Pillow torch
+        run: python -m pip install --disable-pip-version-check numpy Pillow PyYAML torch
       - name: Restore
         run: dotnet restore .\Aimmy2.sln
       - name: Release build
