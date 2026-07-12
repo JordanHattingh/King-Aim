@@ -15,25 +15,30 @@ public sealed class TrackerAdapter : ITrackerService
     private readonly int _screenTop;
     private readonly int _screenWidth;
     private readonly int _screenHeight;
-    private readonly float _assumedFps;
 
+    // Epoch anchors the pipeline's microsecond timestamps to a stable UTC DateTime.
+    // This prevents wall-clock drift, DST jumps, and NTP corrections from affecting
+    // frame ordering inside the frozen TrackManager (which uses DateTime internally).
+    private readonly DateTime _sessionEpochUtc;
+
+    private long _prevTimestampUs = -1;
     private readonly Dictionary<int, long> _trackFirstFrameId = [];
     private IReadOnlyList<TrackState> _last = [];
 
     public TrackerAdapter(
-        int screenWidth,
-        int screenHeight,
-        int screenLeft  = 0,
-        int screenTop   = 0,
-        float assumedFps = 30f)
+        int      screenWidth,
+        int      screenHeight,
+        int      screenLeft  = 0,
+        int      screenTop   = 0,
+        DateTime sessionEpoch = default)
     {
         if (screenWidth  <= 0) throw new ArgumentOutOfRangeException(nameof(screenWidth));
         if (screenHeight <= 0) throw new ArgumentOutOfRangeException(nameof(screenHeight));
-        _screenWidth  = screenWidth;
-        _screenHeight = screenHeight;
-        _screenLeft   = screenLeft;
-        _screenTop    = screenTop;
-        _assumedFps   = assumedFps > 0 ? assumedFps : 30f;
+        _screenWidth     = screenWidth;
+        _screenHeight    = screenHeight;
+        _screenLeft      = screenLeft;
+        _screenTop       = screenTop;
+        _sessionEpochUtc = sessionEpoch == default ? DateTime.UtcNow : sessionEpoch;
         _tm = BuildTrackManager();
     }
 
@@ -44,13 +49,18 @@ public sealed class TrackerAdapter : ITrackerService
         long frameId,
         long captureTimestampUs)
     {
-        var predictions = frameDetections
-            .Select(d => ToPrediction(d))
-            .ToList();
+        // Compute actual frame delta from pipeline timestamps (avoids fixed-FPS assumption)
+        double frameDeltaSeconds = _prevTimestampUs >= 0
+            ? Math.Max(0.0, (captureTimestampUs - _prevTimestampUs) / 1_000_000.0)
+            : 1.0 / 30.0;  // first frame: assume 30 fps until we have a second sample
+        _prevTimestampUs = captureTimestampUs;
 
-        var classRoles = new Dictionary<int, SemanticRole> { [0] = SemanticRole.Enemy };
-        var frameTime  = DateTimeOffset.FromUnixTimeMilliseconds(captureTimestampUs / 1000L)
-                                       .UtcDateTime;
+        var predictions = frameDetections.Select(ToPrediction).ToList();
+        var classRoles  = new Dictionary<int, SemanticRole> { [0] = SemanticRole.Enemy };
+
+        // Epoch-relative DateTime — stable regardless of wall-clock drift
+        DateTime frameTime = _sessionEpochUtc +
+            TimeSpan.FromTicks((long)(captureTimestampUs * (TimeSpan.TicksPerSecond / 1_000_000.0)));
 
         var tracks = _tm.Update(predictions, classRoles, frameTime);
 
@@ -64,10 +74,9 @@ public sealed class TrackerAdapter : ITrackerService
                 _trackFirstFrameId[t.TrackId] = frameId;
 
             int age = (int)(frameId - _trackFirstFrameId[t.TrackId] + 1);
-            result.Add(ToTrackState(t, age));
+            result.Add(ToTrackState(t, age, frameDeltaSeconds));
         }
 
-        // Clean up entries for expired tracks
         foreach (var id in _trackFirstFrameId.Keys.Except(seen).ToList())
             _trackFirstFrameId.Remove(id);
 
@@ -79,6 +88,7 @@ public sealed class TrackerAdapter : ITrackerService
     {
         _tm = BuildTrackManager();
         _trackFirstFrameId.Clear();
+        _prevTimestampUs = -1;
         _last = [];
     }
 
@@ -89,9 +99,7 @@ public sealed class TrackerAdapter : ITrackerService
     private Prediction ToPrediction(PoseDetection d)
     {
         var box    = d.BoundingBox;
-        // Source-frame pixel space (capture local, 0,0 = top-left of capture region)
         var rect   = new RectangleF(box.Left, box.Top, box.Width, box.Height);
-        // Desktop-pixel space (offset by screen origin)
         var screen = new RectangleF(
             _screenLeft + box.Left,
             _screenTop  + box.Top,
@@ -114,7 +122,6 @@ public sealed class TrackerAdapter : ITrackerService
     private PlayerKeypoints? ToLegacyKeypoints(PoseDetection d)
     {
         if (d.Keypoints.Count == 0) return null;
-
         return new PlayerKeypoints
         {
             Head  = ToLegacyKeypoint(d.Head),
@@ -144,17 +151,21 @@ public sealed class TrackerAdapter : ITrackerService
     // Track → TrackState
     // -------------------------------------------------------------------------
 
-    private TrackState ToTrackState(Track t, int age)
+    private TrackState ToTrackState(Track t, int age, double frameDeltaSeconds)
     {
-        // Track.BoundingBox is in desktop-pixel space; convert back to source-frame pixels.
-        var box    = t.BoundingBox;
+        // Box in desktop-pixel space → source-frame pixels, clamped to frame bounds
+        var box = t.BoundingBox;
         var srcBox = new DetectionBoundingBox(
-            box.Left   - _screenLeft,
-            box.Top    - _screenTop,
-            box.Right  - _screenLeft,
-            box.Bottom - _screenTop);
+            Math.Max(0f,           box.Left   - _screenLeft),
+            Math.Max(0f,           box.Top    - _screenTop),
+            Math.Min(_screenWidth,  box.Right  - _screenLeft),
+            Math.Min(_screenHeight, box.Bottom - _screenTop));
 
-        float stabilityScore = ComputeStability(t);
+        // Velocity: TrackManager stores normalized-per-second; convert to pixels/frame
+        float vx = t.Velocity.X * _screenWidth  * (float)frameDeltaSeconds;
+        float vy = t.Velocity.Y * _screenHeight * (float)frameDeltaSeconds;
+
+        float stability = ComputeStability(t);
 
         return new TrackState
         {
@@ -165,17 +176,16 @@ public sealed class TrackerAdapter : ITrackerService
             Age                 = age,
             VisibleFrames       = t.ObservationCount,
             MissingFrames       = t.FramesSinceLastSeen,
-            VelocityX           = t.Velocity.X * _screenWidth  / _assumedFps,
-            VelocityY           = t.Velocity.Y * _screenHeight / _assumedFps,
-            StabilityScore      = stabilityScore,
+            VelocityX           = vx,
+            VelocityY           = vy,
+            StabilityScore      = stability,
         };
     }
 
     private static float ComputeStability(Track t)
     {
         if (t.FramesSinceLastSeen > 0) return 0f;
-        float obs = Math.Min(1f, t.ObservationCount / 15f);
-        return obs;
+        return Math.Min(1f, t.ObservationCount / 15f);
     }
 
     private static IReadOnlyList<PoseKeypoint> ToCorePoseKeypoints(PlayerKeypoints? kps)
@@ -192,11 +202,9 @@ public sealed class TrackerAdapter : ITrackerService
 
     private static PoseKeypoint ToCoreKeypoint(KeypointName name, Keypoint kp) =>
         new(name, kp.X, kp.Y, kp.Visibility,
-            kp.Visibility >= 0.5f ? KingAim.Core.Perception.KeypointVisibility.Visible  :
+            kp.Visibility >= 0.5f  ? KingAim.Core.Perception.KeypointVisibility.Visible  :
             kp.Visibility >= 0.25f ? KingAim.Core.Perception.KeypointVisibility.Occluded :
                                      KingAim.Core.Perception.KeypointVisibility.Absent);
-
-    // -------------------------------------------------------------------------
 
     private TrackManager BuildTrackManager() => new()
     {

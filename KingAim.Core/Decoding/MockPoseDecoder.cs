@@ -1,5 +1,7 @@
 using KingAim.Core.Inference;
+using KingAim.Core.Models.Onnx;
 using KingAim.Core.Perception;
+using KingAim.Core.Preprocessing;
 
 namespace KingAim.Core.Decoding;
 
@@ -19,8 +21,13 @@ public sealed class MockPoseDecoder : IModelDecoder
 
     public void ClearDetections() => _detections = [];
 
+    public DecoderCompatibilityReport CheckCompatibility(OnnxModelContract contract)
+        => DecoderCompatibilityReport.Compatible(
+            DecoderId,
+            observations: ["MockPoseDecoder accepts any contract."]);
+
     public void ValidateOutputContract(InferenceOutput output) { }
 
-    public IReadOnlyList<PoseDetection> Decode(InferenceOutput output, NmsParameters nms)
+    public IReadOnlyList<PoseDetection> Decode(InferenceOutput output, PreprocessingMetadata preprocessing)
         => _detections;
 }

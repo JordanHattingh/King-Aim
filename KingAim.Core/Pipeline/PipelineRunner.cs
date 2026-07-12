@@ -41,7 +41,6 @@ public sealed class PipelineRunner
     private readonly IFramePreprocessor          _preprocessor;
     private readonly IInferenceEngine            _engine;
     private readonly IModelDecoder               _decoder;
-    private readonly NmsParameters               _nms;
     private readonly IGeometryValidator          _validator;
     private readonly ITrackerService             _tracker;
     private readonly ISceneAnalyzer              _scene;
@@ -60,7 +59,6 @@ public sealed class PipelineRunner
         IFramePreprocessor           preprocessor,
         IInferenceEngine             engine,
         IModelDecoder                decoder,
-        NmsParameters                nms,
         IGeometryValidator           validator,
         ITrackerService              tracker,
         ISceneAnalyzer               scene,
@@ -78,7 +76,6 @@ public sealed class PipelineRunner
         _preprocessor = preprocessor;
         _engine      = engine;
         _decoder     = decoder;
-        _nms         = nms;
         _validator   = validator;
         _tracker     = tracker;
         _scene       = scene;
@@ -122,7 +119,7 @@ public sealed class PipelineRunner
         var output = await _engine.RunAsync(input, ct);
 
         // 5. Decode
-        var detections = _decoder.Decode(output, _nms);
+        var detections = _decoder.Decode(output, preprocessed.Meta);
 
         // 6. Validate — filter rejected
         var valid = new List<PoseDetection>(detections.Count);

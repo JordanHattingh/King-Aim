@@ -1,11 +1,13 @@
 using KingAim.Core.Inference;
+using KingAim.Core.Models.Onnx;
 using KingAim.Core.Perception;
+using KingAim.Core.Preprocessing;
 
 namespace KingAim.Core.Decoding.Mock;
 
 /// <summary>
 /// Returns a configurable set of detections without inspecting the raw tensors.
-/// Used for integration tests and for building the full pipeline before ONNX export.
+/// Kept for backwards compatibility; prefer <see cref="KingAim.Core.Decoding.MockPoseDecoder"/>.
 /// </summary>
 public sealed class MockPoseDecoder : IModelDecoder
 {
@@ -13,21 +15,20 @@ public sealed class MockPoseDecoder : IModelDecoder
 
     public string DecoderId => "mock-v1";
 
-    /// <param name="factory">
-    /// Produces detections for a given inference output.
-    /// Defaults to returning an empty list (no detections).
-    /// </param>
     public MockPoseDecoder(Func<InferenceOutput, IReadOnlyList<PoseDetection>>? factory = null)
     {
         _factory = factory ?? (_ => []);
     }
 
-    public void ValidateOutputContract(InferenceOutput output) { /* Mock: always passes. */ }
+    public DecoderCompatibilityReport CheckCompatibility(OnnxModelContract contract)
+        => DecoderCompatibilityReport.Compatible(DecoderId,
+            observations: ["MockPoseDecoder.Mock accepts any contract."]);
 
-    public IReadOnlyList<PoseDetection> Decode(InferenceOutput output, NmsParameters nms)
+    public void ValidateOutputContract(InferenceOutput output) { }
+
+    public IReadOnlyList<PoseDetection> Decode(InferenceOutput output, PreprocessingMetadata preprocessing)
         => _factory(output);
 
-    // Convenience: create a decoder that always returns a fixed list.
     public static MockPoseDecoder WithDetections(params PoseDetection[] detections)
         => new(_ => detections);
 }

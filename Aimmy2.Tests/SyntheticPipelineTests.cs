@@ -122,7 +122,7 @@ public sealed class SyntheticPipelineTests
 
             Runner = new PipelineRunner(
                 Safety, Source, Scheduler, Preprocessor,
-                Engine, Decoder, new NmsParameters(), Validator,
+                Engine, Decoder, Validator,
                 Tracker, Scene, Focus, Dispatcher,
                 new NullVisualCue(), new NullAudioCue(), new NullHapticCue(),
                 new NullPointing(), Diagnostics);

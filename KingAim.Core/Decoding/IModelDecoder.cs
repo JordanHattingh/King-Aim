@@ -1,5 +1,7 @@
 using KingAim.Core.Inference;
+using KingAim.Core.Models.Onnx;
 using KingAim.Core.Perception;
+using KingAim.Core.Preprocessing;
 
 namespace KingAim.Core.Decoding;
 
@@ -13,6 +15,12 @@ public interface IModelDecoder
     string DecoderId { get; }
 
     /// <summary>
+    /// Checks whether this decoder can handle the given model contract.
+    /// Should be called before the first inference to catch shape mismatches early.
+    /// </summary>
+    DecoderCompatibilityReport CheckCompatibility(OnnxModelContract contract);
+
+    /// <summary>
     /// Validates that the output tensor names and shapes are compatible with this decoder.
     /// Throws if the contract is violated.
     /// </summary>
@@ -20,8 +28,9 @@ public interface IModelDecoder
 
     /// <summary>
     /// Decodes raw tensors into normalized detections in source-frame pixel space.
+    /// <paramref name="preprocessing"/> provides the inverse letterbox transform.
     /// </summary>
-    IReadOnlyList<PoseDetection> Decode(InferenceOutput output, NmsParameters nms);
+    IReadOnlyList<PoseDetection> Decode(InferenceOutput output, PreprocessingMetadata preprocessing);
 }
 
 public sealed class NmsParameters
