@@ -37,6 +37,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Aimmy2\Aimmy2.csproj" />
     <ProjectReference Include="..\Aimmy2.TestArena\Aimmy2.TestArena.csproj" />
+    <ProjectReference Include="..\KingAim.Core\KingAim.Core.csproj" />
   </ItemGroup>
 
 </Project>
