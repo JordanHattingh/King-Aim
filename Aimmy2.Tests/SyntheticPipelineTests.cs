@@ -1,6 +1,7 @@
 using KingAim.Core.Accessibility;
 using KingAim.Core.Accessibility.Cues;
 using KingAim.Core.Accessibility.Events;
+using KingAim.Core.Accessibility.Input;
 using KingAim.Core.Accessibility.Pointing;
 using KingAim.Core.Capture.Sources;
 using KingAim.Core.Decoding;
@@ -125,7 +126,7 @@ public sealed class SyntheticPipelineTests
                 Engine, Decoder, Validator,
                 Tracker, Scene, Focus, Dispatcher,
                 new NullVisualCue(), new NullAudioCue(), new NullHapticCue(),
-                new NullPointing(), Diagnostics);
+                new NullPointing(), new ManualDriftCompensator(), Diagnostics);
         }
 
         public async Task<PipelineRunResult> TickAsync()

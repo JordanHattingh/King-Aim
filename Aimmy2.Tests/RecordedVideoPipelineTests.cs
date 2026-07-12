@@ -4,6 +4,7 @@ using Aimmy2.Capture;
 using KingAim.Core.Accessibility;
 using KingAim.Core.Accessibility.Cues;
 using KingAim.Core.Accessibility.Events;
+using KingAim.Core.Accessibility.Input;
 using KingAim.Core.Accessibility.Pointing;
 using KingAim.Core.Capture;
 using KingAim.Core.Capture.Sources;
@@ -180,7 +181,7 @@ public sealed class RecordedVideoPipelineTests : IClassFixture<RecordedVideoPipe
                 Engine, Decoder, Validator,
                 Tracker, Scene, Focus, Dispatcher,
                 new NullVisualCue(), new NullAudioCue(), new NullHapticCue(),
-                new NullPointing(), Diagnostics);
+                new NullPointing(), new ManualDriftCompensator(), Diagnostics);
         }
 
         public void Dispose() => Source.Dispose();

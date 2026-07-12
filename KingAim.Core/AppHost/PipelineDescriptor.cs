@@ -1,4 +1,5 @@
 using KingAim.Core.Accessibility.Cues;
+using KingAim.Core.Accessibility.Input;
 using KingAim.Core.Accessibility.Pointing;
 using KingAim.Core.Capture;
 using KingAim.Core.Decoding;
@@ -36,6 +37,7 @@ public sealed class PipelineDescriptor
     public required IAudioCueProvider    Audio        { get; init; }
     public required IHapticCueProvider   Haptic       { get; init; }
     public required IPointingAssistController Pointing { get; init; }
+    public required IDriftCompensator         Drift    { get; init; }
     public required IDiagnosticsService  Diagnostics  { get; init; }
     public required IStructuredLogger    Logger       { get; init; }
 }

@@ -1,5 +1,6 @@
 using KingAim.Core.Accessibility;
 using KingAim.Core.Accessibility.Cues;
+using KingAim.Core.Accessibility.Input;
 using KingAim.Core.Accessibility.Pointing;
 using KingAim.Core.Capture;
 using KingAim.Core.Decoding;
@@ -50,6 +51,7 @@ public sealed class PipelineRunner
     private readonly IAudioCueProvider           _audio;
     private readonly IHapticCueProvider          _haptic;
     private readonly IPointingAssistController   _pointing;
+    private readonly IDriftCompensator           _drift;
     private readonly DiagnosticsService          _diagnostics;
 
     public PipelineRunner(
@@ -68,6 +70,7 @@ public sealed class PipelineRunner
         IAudioCueProvider            audio,
         IHapticCueProvider           haptic,
         IPointingAssistController    pointing,
+        IDriftCompensator            drift,
         DiagnosticsService           diagnostics)
     {
         _safety      = safety;
@@ -85,6 +88,7 @@ public sealed class PipelineRunner
         _audio       = audio;
         _haptic      = haptic;
         _pointing    = pointing;
+        _drift       = drift;
         _diagnostics = diagnostics;
     }
 
@@ -182,6 +186,20 @@ public sealed class PipelineRunner
             Scene      = finalScene,
             Focus      = focusTrack,
         };
+    }
+
+    /// <summary>
+    /// Returns the combined pointer correction for this polling interval.
+    /// Call this from the mouse output loop (not from TickAsync).
+    /// Pointing assist contributes only when engaged; drift runs whenever enabled.
+    /// Both components return fractional screen units; the caller converts to pixels.
+    /// </summary>
+    public (float DeltaX, float DeltaY) GetPointerDelta(double deltaSeconds)
+    {
+        if (_safety.IsEmergencyDisabled) return (0f, 0f);
+        var (px, py) = _pointing.Update();
+        var (dx, dy) = _drift.Compensate(deltaSeconds);
+        return (px + dx, py + dy);
     }
 
     public void EmergencyStop()
