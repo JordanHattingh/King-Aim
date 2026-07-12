@@ -18,7 +18,7 @@ def percentile(values: list[float], q: float) -> float:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Compare YOLOv8 and YOLO11 candidates")
+    parser = argparse.ArgumentParser(description="Compare frozen YOLOv8, YOLO26, and YOLO11 candidates")
     parser.add_argument("--model", action="append", required=True)
     parser.add_argument("--data", required=True, type=Path)
     parser.add_argument("--images", required=True, type=Path, help="Locked benchmark image directory")
