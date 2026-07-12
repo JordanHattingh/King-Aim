@@ -66,6 +66,7 @@
 
   <ItemGroup>
     <PackageReference Include="AntWpf" Version="1.0.5" />
+    <PackageReference Include="OpenCvSharp4.Windows" Version="4.10.0.20241108" />
     <PackageReference Include="Costura.Fody" Version="6.0.0">
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
