@@ -39,6 +39,11 @@ class PoseCandidateMatrixTests(unittest.TestCase):
         self.assertIsNone(contract["split_manifest_sha256"])
         self.assertIsNone(contract["directml_hardware_id"])
 
+    def test_experiment_contract_lives_under_training_contracts(self) -> None:
+        self.assertEqual("training", DEFAULT_EXPERIMENT_CONTRACT.parents[1].name)
+        self.assertEqual("contracts", DEFAULT_EXPERIMENT_CONTRACT.parent.name)
+        self.assertEqual("pose_candidate_matrix.json", DEFAULT_EXPERIMENT_CONTRACT.name)
+
 
 if __name__ == "__main__":
     unittest.main()

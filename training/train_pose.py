@@ -14,7 +14,7 @@ POSE_CANDIDATES = {
     "yolo26n-pose.pt": "low-end",
     "yolo11s-pose.pt": "control",
 }
-DEFAULT_EXPERIMENT_CONTRACT = Path(__file__).resolve().parents[1] / "configs" / "pose_candidate_matrix.json"
+DEFAULT_EXPERIMENT_CONTRACT = Path(__file__).resolve().parent / "contracts" / "pose_candidate_matrix.json"
 
 
 def candidate_role(model: str, resume: object = None) -> str:
