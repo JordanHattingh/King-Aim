@@ -10,7 +10,7 @@ Version `2.5.0` is the stable DA1 foundation. It includes calibrated detector co
 
 ```text
 screen capture
-  -> YOLO detector / YOLO11-Pose
+  -> YOLO detector / YOLO26-Pose candidate
   -> confidence calibration
   -> Hungarian association (IoU + distance + Kalman + optional GRU/pose)
   -> TrackManager
@@ -45,10 +45,10 @@ Freeze YOLOv8 epoch 50 without modifying the active run:
 python training\freeze_yolov8_baseline.py --run C:\path\to\run --output C:\KingAimTraining\baseline\yolov8-e050 --dataset C:\path\to\dataset
 ```
 
-Train one YOLO11-Pose candidate per command:
+Train one frozen-matrix pose candidate per command:
 
 ```powershell
-python training\train_pose.py --data C:\KingAimTraining\pose\kingaim_pose.yaml --model yolo11n-pose.pt --imgsz 512 --epochs 200 --batch 6 --device 0 --save-period 10 --project C:\KingAimTraining\runs\pose --name kingaim-yolo11n-pose-v1
+python training\train_pose.py --data C:\KingAimTraining\pose\kingaim_pose.yaml --model yolo26s-pose.pt --imgsz 512 --epochs 200 --batch 6 --device 0 --save-period 10 --project C:\KingAimTraining\runs\pose --name kingaim-yolo26s-pose-v1
 ```
 
 Every accepted image belongs to one source session and one dataset split. Run provenance, duplicate, license, and annotation audits before training.
@@ -65,7 +65,7 @@ Every accepted image belongs to one source session and one dataset split. Run pr
 
 ## Current limits
 
-- YOLOv8 remains the comparison baseline until YOLO11-Pose wins the locked evaluation.
+- YOLOv8 E050 remains the comparison baseline until YOLO26s-Pose, YOLO26n-Pose, or the YOLO11s-Pose control wins every locked deployment gate.
 - Final GRU, calibration, and movement models are not activated until they beat simpler baselines on unseen grouped sessions.
 - DirectML performance and parity require the target Windows GPU.
 - Controlled pointing is optional, separately enabled, bounded, stale-observation rejecting, and manually overridable.

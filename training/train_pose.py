@@ -1,4 +1,4 @@
-"""Reproducible single-model YOLO11-Pose trainer for King Aim."""
+"""Reproducible single-model King Aim pose-candidate trainer."""
 
 from __future__ import annotations
 
@@ -9,9 +9,25 @@ from pathlib import Path
 
 from foundation import atomic_json, environment_report, git_commit, hash_tree, utc_now
 
+POSE_CANDIDATES = {
+    "yolo26s-pose.pt": "primary",
+    "yolo26n-pose.pt": "low-end",
+    "yolo11s-pose.pt": "control",
+}
+DEFAULT_EXPERIMENT_CONTRACT = Path(__file__).resolve().parents[1] / "configs" / "pose_candidate_matrix.json"
+
+
+def candidate_role(model: str, resume: object = None) -> str:
+    model_name = Path(model).name.lower()
+    if resume:
+        return POSE_CANDIDATES.get(model_name, "resume")
+    if model_name not in POSE_CANDIDATES:
+        raise ValueError(f"Model must be one of the frozen candidates: {', '.join(POSE_CANDIDATES)}")
+    return POSE_CANDIDATES[model_name]
+
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train one King Aim YOLO11 pose model")
+    parser = argparse.ArgumentParser(description="Train one frozen-matrix King Aim pose candidate")
     parser.add_argument("--data", required=True, type=Path)
     parser.add_argument("--model", required=True)
     parser.add_argument("--imgsz", type=int, default=512)
@@ -26,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", nargs="?", const=True)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-export", action="store_true")
+    parser.add_argument("--experiment-contract", type=Path, default=DEFAULT_EXPERIMENT_CONTRACT)
     return parser.parse_args()
 
 
@@ -34,6 +51,17 @@ def validate(args: argparse.Namespace) -> dict:
         raise FileNotFoundError(f"Dataset YAML not found: {args.data}")
     if args.imgsz < 256 or args.epochs <= 0 or args.batch == 0 or args.save_period <= 0:
         raise ValueError("imgsz must be >=256; epochs/save-period positive; batch non-zero")
+    role = candidate_role(args.model, args.resume)
+    if not args.experiment_contract.is_file():
+        raise FileNotFoundError(f"Experiment contract not found: {args.experiment_contract}")
+    contract = json.loads(args.experiment_contract.read_text(encoding="utf-8"))
+    if contract.get("candidate_roles") != POSE_CANDIDATES:
+        raise ValueError("Experiment contract candidate matrix differs from the trainer")
+    for field in ("dataset_revision_sha256", "split_manifest_sha256", "directml_hardware_id"):
+        if not contract.get(field):
+            raise ValueError(f"Experiment contract is not frozen: {field} is missing")
+    if args.imgsz != contract.get("input_size") or args.epochs != contract["training"]["epochs"] or args.seed != contract["training"]["seed"]:
+        raise ValueError("Run arguments differ from the frozen experiment contract")
     report = environment_report()
     torch_info = report.get("torch") or {}
     if str(args.device).lower() not in {"cpu", "-1"} and not torch_info.get("cuda_available"):
@@ -41,6 +69,9 @@ def validate(args: argparse.Namespace) -> dict:
     if torch_info.get("gpu_memory_bytes") and int(torch_info["gpu_memory_bytes"]) < 3 * 1024**3:
         raise RuntimeError("GPU has less than 3 GiB VRAM; use --device cpu or reduce the workload")
     report["dataset_yaml_sha256"] = hash_tree(args.data.parent, (args.data.name,))
+    report["candidate_role"] = role
+    report["experiment_contract"] = str(args.experiment_contract.resolve())
+    report["experiment_contract_sha256"] = hash_tree(args.experiment_contract.parent, (args.experiment_contract.name,))
     return report
 
 
@@ -75,10 +106,24 @@ def main() -> int:
     if not best.is_file():
         raise FileNotFoundError(f"Training completed without best checkpoint: {best}")
     if not args.skip_export:
-        exported = Path(YOLO(str(best)).export(format="onnx", imgsz=args.imgsz, opset=18, simplify=True, dynamic=False, half=False))
+        exported = Path(YOLO(str(best)).export(
+            format="onnx", imgsz=args.imgsz, batch=1, opset=18, simplify=True,
+            dynamic=False, half=False, end2end=False,
+        ))
         destination = run_dir / "weights" / f"{args.name}-fp32.onnx"
         if exported.resolve() != destination.resolve():
             shutil.move(exported, destination)
+        import onnx
+        graph = onnx.load(str(destination)).graph
+        def dimensions(value_info: object) -> list[int | str | None]:
+            dims = value_info.type.tensor_type.shape.dim
+            return [dim.dim_value if dim.HasField("dim_value") else (dim.dim_param or None) for dim in dims]
+        atomic_json(run_dir / "weights" / "onnx_export_contract.json", {
+            "format": "onnx", "precision": "fp32", "opset": 18, "batch": 1,
+            "input_size": args.imgsz, "dynamic": False, "end2end": False,
+            "inputs": [{"name": item.name, "shape": dimensions(item)} for item in graph.input],
+            "outputs": [{"name": item.name, "shape": dimensions(item)} for item in graph.output],
+        })
         print(f"Exported FP32 ONNX: {destination}")
     return 0
 
