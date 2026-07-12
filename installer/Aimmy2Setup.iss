@@ -12,7 +12,15 @@
 #define MyAppVersion "2.5.0"
 #define MyAppPublisher "King Aim"
 #define MyAppExeName "YmmiaV2.exe"
-#define PublishDir "..\publish\Aimmy2"
+#ifndef PublishDir
+  #define PublishDir "..\publish\Aimmy2"
+#endif
+#ifndef StableBundleDir
+  #define StableBundleDir "payload\stable-detector"
+#endif
+#ifndef InstallerOutputDir
+  #define InstallerOutputDir "output"
+#endif
 #define RedistDir "redist"
 
 [Setup]
@@ -23,7 +31,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-OutputDir=output
+OutputDir={#InstallerOutputDir}
 OutputBaseFilename=KingAimSetup
 Compression=lzma2
 SolidCompression=yes
@@ -44,11 +52,19 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 ; Includes all AI models under Models\ (ApexLegendsV1, BadBusiness30K, TheFinals20K,
 ; TheFinals12K, CounterStrike5K, Rust5K, UniversalV4, AIOHumanoidV7, CounterBloxHead,
 ; BattleBitV1, EnemyDetectionV1) and their manifest.json files.
-Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PublishDir}\*"; DestDir: "{app}"; Excludes: "Models\*,bin\configs\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+; Verified stable bundle. Build-Installer.ps1 supplies this payload explicitly.
+Source: "{#StableBundleDir}\model.onnx"; DestDir: "{app}\Models\stable-detector"; Flags: ignoreversion
+Source: "{#StableBundleDir}\manifest.json"; DestDir: "{app}\Models\stable-detector"; Flags: ignoreversion
+Source: "{#StableBundleDir}\checksums.ini"; DestDir: "{app}\Models\stable-detector"; Flags: ignoreversion
+Source: "{#StableBundleDir}\checksums.json"; DestDir: "{app}\Models\stable-detector"; Flags: ignoreversion
 
 ; ViGEmBus driver installer — required for virtual gamepad output (right-stick aim assist).
 ; App degrades gracefully (IsConnected=false) if driver is not present.
-Source: "{#RedistDir}\ViGEmBus_1.22.0_x64_x86_arm64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
+#ifndef SkipRedist
+  Source: "{#RedistDir}\ViGEmBus_1.22.0_x64_x86_arm64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
+#endif
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -57,7 +73,9 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 ; Install/upgrade ViGEmBus silently. Required for gamepad assist output.
-Filename: "{tmp}\ViGEmBus_1.22.0_x64_x86_arm64.exe"; Parameters: "/quiet /norestart"; StatusMsg: "Installing virtual gamepad driver (ViGEmBus)..."; Flags: waituntilterminated
+#ifndef SkipRedist
+  Filename: "{tmp}\ViGEmBus_1.22.0_x64_x86_arm64.exe"; Parameters: "/quiet /norestart"; StatusMsg: "Installing virtual gamepad driver (ViGEmBus)..."; Flags: waituntilterminated
+#endif
 
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 

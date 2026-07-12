@@ -33,6 +33,30 @@ jobs:
         run: python -m compileall -q training
       - name: Python tests
         run: python -m unittest discover -s training/tests -p "test_*.py" -v
+      - name: Compile installer fixture
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          $fixture = Join-Path $env:RUNNER_TEMP 'kingaim-installer-fixture'
+          $publish = Join-Path $fixture 'publish'
+          $bundle = Join-Path $fixture 'stable-bundle'
+          New-Item -ItemType Directory -Force -Path $publish, $bundle | Out-Null
+          Set-Content -LiteralPath (Join-Path $publish 'YmmiaV2.exe') -Value 'fixture application binary'
+          Set-Content -LiteralPath (Join-Path $bundle 'model.onnx') -Value 'fixture ONNX payload'
+          @{
+            schema_version = '2'
+            id = 'ci-fixture-stable-detector'
+            version = '0.0.0-ci'
+            architecture = 'fixture-detector'
+            task = 'detect'
+            output_schema = 'yolo-detect-v1'
+            is_pose_model = $false
+          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $bundle 'manifest.json')
+          $installerOutput = Join-Path $fixture 'installer-output'
+          .\installer\Build-Installer.ps1 -StableModelDirectory $bundle -PublishDirectory $publish -OutputDirectory $installerOutput -SkipRedist
+          if (-not (Test-Path (Join-Path $installerOutput 'KingAimSetup.exe'))) {
+            throw 'Installer fixture compilation produced no executable.'
+          }
       - name: Diff integrity
         shell: pwsh
         run: git diff --check
