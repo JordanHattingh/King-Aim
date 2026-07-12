@@ -2,6 +2,7 @@ using KingAim.Core.Accessibility;
 using KingAim.Core.Accessibility.Cues;
 using KingAim.Core.Accessibility.Events;
 using KingAim.Core.Accessibility.Input;
+using GamepadAssistController = KingAim.Core.Accessibility.Input.GamepadAssistController;
 using KingAim.Core.Accessibility.Pointing;
 using KingAim.Core.Capture.Sources;
 using KingAim.Core.Decoding;
@@ -126,7 +127,8 @@ public sealed class SyntheticPipelineTests
                 Engine, Decoder, Validator,
                 Tracker, Scene, Focus, Dispatcher,
                 new NullVisualCue(), new NullAudioCue(), new NullHapticCue(),
-                new NullPointing(), new ManualDriftCompensator(), Diagnostics);
+                new NullPointing(), new ManualDriftCompensator(),
+                new GamepadAssistController(), Diagnostics);
         }
 
         public async Task<PipelineRunResult> TickAsync()

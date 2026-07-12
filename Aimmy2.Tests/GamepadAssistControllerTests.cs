@@ -1,4 +1,4 @@
-using Aimmy2.Gamepad;
+using KingAim.Core.Accessibility.Input;
 using Xunit;
 
 namespace Aimmy2.Tests

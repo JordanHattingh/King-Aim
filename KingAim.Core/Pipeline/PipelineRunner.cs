@@ -52,6 +52,7 @@ public sealed class PipelineRunner
     private readonly IHapticCueProvider          _haptic;
     private readonly IPointingAssistController   _pointing;
     private readonly IDriftCompensator           _drift;
+    private readonly IGamepadAssistController    _gamepadAssist;
     private readonly DiagnosticsService          _diagnostics;
 
     public PipelineRunner(
@@ -71,6 +72,7 @@ public sealed class PipelineRunner
         IHapticCueProvider           haptic,
         IPointingAssistController    pointing,
         IDriftCompensator            drift,
+        IGamepadAssistController     gamepadAssist,
         DiagnosticsService           diagnostics)
     {
         _safety      = safety;
@@ -87,9 +89,10 @@ public sealed class PipelineRunner
         _visual      = visual;
         _audio       = audio;
         _haptic      = haptic;
-        _pointing    = pointing;
-        _drift       = drift;
-        _diagnostics = diagnostics;
+        _pointing      = pointing;
+        _drift         = drift;
+        _gamepadAssist = gamepadAssist;
+        _diagnostics   = diagnostics;
     }
 
     /// <summary>
@@ -200,6 +203,51 @@ public sealed class PipelineRunner
         var (px, py) = _pointing.Update();
         var (dx, dy) = _drift.Compensate(deltaSeconds);
         return (px + dx, py + dy);
+    }
+
+    /// <summary>
+    /// Returns the combined gamepad right-stick assist delta for this polling interval.
+    /// Call this from the gamepad output loop (not from TickAsync).
+    /// The returned values are in stick space (-1..1). Blend with physical input via
+    /// <c>StickBlender.Blend</c> before passing to <c>IGamepadOutput.SetFullState</c>.
+    /// </summary>
+    /// <param name="focus">Current focus track from the most recent TickAsync result.</param>
+    /// <param name="screenW">Capture width in pixels.</param>
+    /// <param name="screenH">Capture height in pixels.</param>
+    /// <param name="deltaSeconds">Elapsed time since the last gamepad update call.</param>
+    public (float AssistRx, float AssistRy) GetGamepadAssistDelta(
+        TrackState? focus, int screenW, int screenH, double deltaSeconds)
+    {
+        if (_safety.IsEmergencyDisabled) return (0f, 0f);
+
+        bool hasTarget = focus != null && !focus.IsLost;
+        float errorX = 0f, errorY = 0f, velX = 0f, velY = 0f;
+        float confidence = 0f;
+        double observationAgeMs = 0.0;
+        int? trackId = null;
+
+        if (hasTarget)
+        {
+            float cx = focus!.Box.CentreX;
+            float cy = focus.Box.CentreY;
+            errorX = screenW > 0 ? (cx / screenW) - 0.5f : 0f;
+            errorY = screenH > 0 ? (cy / screenH) - 0.5f : 0f;
+            velX = screenW > 0 ? focus.VelocityX / screenW : 0f;
+            velY = screenH > 0 ? focus.VelocityY / screenH : 0f;
+            confidence = focus.DetectionConfidence;
+            observationAgeMs = focus.MissingFrames * Math.Max(deltaSeconds, 1.0 / 240.0) * 1000.0;
+            trackId = focus.TrackId;
+        }
+
+        var (assistRx, assistRy) = _gamepadAssist.Update(
+            hasTarget, errorX, errorY, velX, velY,
+            confidence, observationAgeMs, deltaSeconds, trackId);
+
+        var (driftX, driftY) = _drift.Compensate(deltaSeconds);
+
+        return (
+            Math.Clamp(assistRx + driftX, -1f, 1f),
+            Math.Clamp(assistRy + driftY, -1f, 1f));
     }
 
     public void EmergencyStop()

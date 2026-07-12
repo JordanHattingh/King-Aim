@@ -36,8 +36,9 @@ public sealed class PipelineDescriptor
     public required IVisualCueProvider   Visual       { get; init; }
     public required IAudioCueProvider    Audio        { get; init; }
     public required IHapticCueProvider   Haptic       { get; init; }
-    public required IPointingAssistController Pointing { get; init; }
-    public required IDriftCompensator         Drift    { get; init; }
+    public required IPointingAssistController Pointing      { get; init; }
+    public required IDriftCompensator         Drift         { get; init; }
+    public required IGamepadAssistController  GamepadAssist { get; init; }
     public required IDiagnosticsService  Diagnostics  { get; init; }
     public required IStructuredLogger    Logger       { get; init; }
 }
