@@ -190,6 +190,23 @@ public sealed class PipelineGamepadAssistTests
     }
 
     [Fact]
+    public void GetGamepadAssistDelta_DriftSuppressedWhenNotAiming()
+    {
+        var drift = new ManualDriftCompensator();
+        drift.UpdateProfile(new DriftCompensationProfile
+        {
+            HorizontalOffsetPerSecond = 0.2f,
+            Enabled = true,
+        });
+        var runner = MakeRunner(
+            new GamepadAssistController { Gain = 0f, GainNear = 0f, IntegralGain = 0f },
+            drift);
+
+        var (rx, _) = runner.GetGamepadAssistDelta(null, 1920, 1080, 1.0 / 60.0, aimingHeld: false);
+        Assert.Equal(0f, rx);
+    }
+
+    [Fact]
     public void GetGamepadAssistDelta_DriftAdded()
     {
         // Drift right at 0.2 sticks/s for 1 second should produce noticeable positive RX
@@ -216,6 +233,7 @@ public sealed class PipelineGamepadAssistTests
         // For drift-only (no focus), rx = driftX = 0.2 × (1/60) ≈ 0.003333
         float expectedDriftPerFrame = 0.2f / 60f;
         Assert.Equal(expectedDriftPerFrame, sumRx, precision: 4);
+        // aimingHeld defaults to true so drift applies — matching the scoped-in path.
     }
 
     [Fact]

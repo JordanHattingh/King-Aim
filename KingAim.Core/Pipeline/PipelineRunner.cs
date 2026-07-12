@@ -236,8 +236,11 @@ public sealed class PipelineRunner
     /// <param name="screenW">Capture width in pixels.</param>
     /// <param name="screenH">Capture height in pixels.</param>
     /// <param name="deltaSeconds">Elapsed time since the last gamepad update call.</param>
+    /// <param name="aimingHeld">True when the player is holding an aim button (L2/LT or LB/L1).
+    ///     Drift compensation is suppressed when false so it only runs while scoped.</param>
     public (float AssistRx, float AssistRy) GetGamepadAssistDelta(
-        TrackState? focus, int screenW, int screenH, double deltaSeconds)
+        TrackState? focus, int screenW, int screenH, double deltaSeconds,
+        bool aimingHeld = true)
     {
         bool shouldAssist = !_safety.IsEmergencyDisabled && _gamepadAssistEnabled;
         if (!shouldAssist)
@@ -277,7 +280,7 @@ public sealed class PipelineRunner
             hasTarget, errorX, errorY, velX, velY,
             confidence, observationAgeMs, deltaSeconds, trackId);
 
-        var (driftX, driftY) = _drift.Compensate(deltaSeconds);
+        var (driftX, driftY) = aimingHeld ? _drift.Compensate(deltaSeconds) : (0f, 0f);
 
         float outRx = Math.Clamp(assistRx + driftX, -1f, 1f);
         float outRy = Math.Clamp(assistRy + driftY, -1f, 1f);

@@ -234,8 +234,12 @@ public sealed class KingAimApplicationHost : IApplicationHost
             {
                 TrackState? focus = Interlocked.CompareExchange(ref _lastFocus, null, null);
 
+                const ushort LB = 0x0100;
+                bool aimingHeld = physical.Connected &&
+                    (physical.LeftTrigger > 0.5f || (physical.Buttons & LB) != 0);
+
                 var (assistRx, assistRy) = runner.GetGamepadAssistDelta(
-                    focus, _captureWidth, _captureHeight, dt);
+                    focus, _captureWidth, _captureHeight, dt, aimingHeld);
 
                 _assistActive = runner.AssistIsActive;
 
