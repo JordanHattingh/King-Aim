@@ -33,24 +33,31 @@ namespace Aimmy2.AILogic
             var candidates = new List<Prediction>();
             foreach (var p in predictions)
             {
-                bool strongConf   = p.Confidence >= poseBypassConfidence;
-                bool weakConf     = p.Confidence >= weakConfidence;
+                // Strong confidence: trust the model directly — keypoints are secondary outputs
+                // that are often noisier than the box confidence. Requiring secondary evidence
+                // here rejects valid high-confidence detections with imperfect pose.
+                if (p.Confidence >= poseBypassConfidence)
+                {
+                    p.AdmissionReason = "strong-conf";
+                    p.Evidence = BuildEvidence(p);
+                    candidates.Add(p);
+                    continue;
+                }
+
+                // Weak-confidence band: require at least one secondary condition to filter noise.
+                if (p.Confidence < weakConfidence)
+                    continue;
+
                 bool goodPose     = p.PoseQuality >= minimumPoseQuality;
-                bool twoKeypoints = CountReliableKeypoints(p.Keypoints, 0.4f) >= 2;
+                bool oneKeypoint  = CountReliableKeypoints(p.Keypoints, 0.4f) >= 1;
                 bool goodProps    = HasValidBodyProportions(
                     p.ScreenRectangle.Width > 0 ? p.ScreenRectangle : p.Rectangle);
 
                 string reason;
-                if (strongConf && (goodPose || twoKeypoints || goodProps))
-                    reason = "strong-conf+secondary";
-                else if (weakConf && goodPose)
-                    reason = "weak-conf+pose";
-                else if (weakConf && twoKeypoints)
-                    reason = "weak-conf+keypoints";
-                else if (weakConf && goodProps)
-                    reason = "weak-conf+proportions";
-                else
-                    continue;
+                if (goodPose)         reason = "weak-conf+pose";
+                else if (oneKeypoint) reason = "weak-conf+keypoint";
+                else if (goodProps)   reason = "weak-conf+proportions";
+                else continue;
 
                 p.AdmissionReason = reason;
                 p.Evidence = BuildEvidence(p);
@@ -58,9 +65,8 @@ namespace Aimmy2.AILogic
             }
 
             candidates.Sort((a, b) => b.Evidence.QualityScore.CompareTo(a.Evidence.QualityScore));
-            // Target ceiling is enforced by TrackManager.MaximumActiveTracks after cross-tile
-            // deduplication. Applying it here would prematurely discard valid detections from
-            // other tiles before the tracker can merge duplicates.
+            // Target ceiling enforced by TrackManager.MaximumActiveTracks after cross-tile
+            // deduplication — not here, where it would discard valid detections from other tiles.
             return candidates;
         }
 
@@ -79,7 +85,8 @@ namespace Aimmy2.AILogic
         {
             if (box.Width <= 0 || box.Height <= 0) return false;
             float aspect = box.Height / box.Width;
-            return aspect is >= 1.2f and <= 6.0f;
+            // 0.7 covers wide crouching/prone poses; 8.0 covers distant thin silhouettes.
+            return aspect is >= 0.7f and <= 8.0f;
         }
 
         private static float MeanKeypointVisibility(PlayerKeypoints kp) =>

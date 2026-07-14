@@ -1510,8 +1510,8 @@ namespace Aimmy2.AILogic
                     float weakThreshold = poseModel
                         ? Math.Min(finalThreshold, _activeManifest?.WeakPoseConfidence ?? finalThreshold)
                         : finalThreshold;
-                    float minimumPoseQuality = _activeManifest?.MinimumPoseQuality ?? 1f;
-                    float poseBypassConfidence = _activeManifest?.PoseBypassConfidence ?? 1f;
+                    float minimumPoseQuality = _activeManifest?.MinimumPoseQuality ?? 0.30f;
+                    float poseBypassConfidence = _activeManifest?.PoseBypassConfidence ?? 0.85f;
                     KDPredictions = poseModel
                         ? PredictionFilter.RankPoseCandidates(
                             KDPredictions, weakThreshold, minimumPoseQuality, poseBypassConfidence,
