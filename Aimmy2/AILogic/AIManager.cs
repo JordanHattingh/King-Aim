@@ -1859,14 +1859,14 @@ namespace Aimmy2.AILogic
                 if (recoilH != 0f) rx = Math.Clamp(rx + recoilH * trigger, -1f, 1f);
                 if (recoilV != 0f) ry = Math.Clamp(ry - recoilV * trigger, -1f, 1f); // negative = up
 
-                // Gentle pull toward detected target while firing.
-                // Scales with target pull strength and RT pressure; capped so the player
-                // stays in full control — this assists correction, not steering.
+                // Pull toward detected target while firing.
+                // ErrorX/Y are normalised screen-fraction errors; multiply by a fixed
+                // scale factor so a slider value of 1 produces a noticeable correction.
                 if (targetPull > 0f && selection.SelectedTrack != null)
                 {
-                    const float MaxPullPerAxis = 0.20f;
-                    float pullX = Math.Clamp(selection.ErrorX * targetPull * trigger, -MaxPullPerAxis, MaxPullPerAxis);
-                    float pullY = Math.Clamp(selection.ErrorY * targetPull * trigger, -MaxPullPerAxis, MaxPullPerAxis);
+                    const float ErrorScale = 8f;
+                    float pullX = selection.ErrorX * targetPull * trigger * ErrorScale;
+                    float pullY = selection.ErrorY * targetPull * trigger * ErrorScale;
                     rx = Math.Clamp(rx + pullX, -1f, 1f);
                     ry = Math.Clamp(ry + pullY, -1f, 1f);
                 }
