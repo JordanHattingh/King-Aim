@@ -42,7 +42,9 @@ namespace Aimmy2.Class
         public static int AiFpsLimit => Math.Max(0, (int)Math.Round(GetSlider("AI FPS Limit")));
         public static double GamepadAssistStrength => GetSlider("Gamepad Assist Strength");
         public static double GamepadAssistSmoothness => GetSlider("Gamepad Assist Smoothness");
-        public static double GamepadRecoilCompensation => GetSlider("Gamepad Recoil Compensation");
+        public static double GamepadRecoilH    => GetSlider("Gamepad Recoil H");
+        public static double GamepadRecoilV    => GetSlider("Gamepad Recoil V");
+        public static double GamepadTargetPull => GetSlider("Gamepad Target Pull");
         public static double ViewmodelExclusion => GetSlider("Viewmodel Exclusion Zone") / 100.0;
         public static double CursorExclusionRadius => GetSlider("Cursor Exclusion Radius");
         public static double DynamicFovSize => GetSlider("Dynamic FOV Size");

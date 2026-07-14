@@ -1844,17 +1844,31 @@ namespace Aimmy2.AILogic
                 assistRx,
                 assistRy);
 
-            // Recoil compensation: when the player is firing (RT > threshold), apply an upward Y
-            // correction to counteract weapon recoil pushing the aim down. Gated purely on firing
-            // input — never on target detection state — so it works even when no target is visible.
-            // Negative RY = look up in XInput convention. Strength is user-configurable (0–1).
+            // Recoil compensation: when the player is firing (RT > threshold), apply stick
+            // corrections to counteract weapon recoil. Negative RY = look up in XInput convention.
+            // Gated purely on firing input — never on detection state — so it fires even with no
+            // visible target. Separate H and V sliders let the user tune per-weapon patterns.
             if (physicalState.Connected && physicalState.RightTrigger > 0.5f)
             {
-                float recoilStrength = (float)AimSettings.GamepadRecoilCompensation;
-                if (recoilStrength > 0f)
+                float trigger    = physicalState.RightTrigger;
+                float recoilH    = (float)AimSettings.GamepadRecoilH;
+                float recoilV    = (float)AimSettings.GamepadRecoilV;
+                float targetPull = (float)AimSettings.GamepadTargetPull;
+
+                // Base anti-recoil corrections (user tuned per weapon)
+                if (recoilH != 0f) rx = Math.Clamp(rx + recoilH * trigger, -1f, 1f);
+                if (recoilV != 0f) ry = Math.Clamp(ry - recoilV * trigger, -1f, 1f); // negative = up
+
+                // Gentle pull toward detected target while firing.
+                // Scales with target pull strength and RT pressure; capped so the player
+                // stays in full control — this assists correction, not steering.
+                if (targetPull > 0f && selection.SelectedTrack != null)
                 {
-                    float recoilCorrection = -recoilStrength * physicalState.RightTrigger;
-                    ry = Math.Clamp(ry + recoilCorrection, -1f, 1f);
+                    const float MaxPullPerAxis = 0.20f;
+                    float pullX = Math.Clamp(selection.ErrorX * targetPull * trigger, -MaxPullPerAxis, MaxPullPerAxis);
+                    float pullY = Math.Clamp(selection.ErrorY * targetPull * trigger, -MaxPullPerAxis, MaxPullPerAxis);
+                    rx = Math.Clamp(rx + pullX, -1f, 1f);
+                    ry = Math.Clamp(ry + pullY, -1f, 1f);
                 }
             }
 
