@@ -5,6 +5,111 @@ namespace Aimmy2.AILogic
 {
     internal static class PredictionFilter
     {
+        internal readonly record struct OutputSummary(float MaximumConfidence, int RowsAbove005, int RowsAbove050, int RowsScanned);
+
+        internal static OutputSummary SummarizeSingleClassPose(Tensor<float> outputTensor, int rows)
+        {
+            int available = Math.Min(rows, outputTensor.Dimensions[2]);
+            float maximum = float.NegativeInfinity;
+            int above005 = 0, above050 = 0;
+            for (int i = 0; i < available; i++)
+            {
+                float confidence = outputTensor[0, 4, i];
+                if (!float.IsFinite(confidence)) continue;
+                maximum = Math.Max(maximum, confidence);
+                if (confidence >= 0.05f) above005++;
+                if (confidence >= 0.50f) above050++;
+            }
+            return new(float.IsNegativeInfinity(maximum) ? 0 : maximum, above005, above050, available);
+        }
+
+        internal static List<Prediction> RankPoseCandidates(
+            IEnumerable<Prediction> predictions,
+            float weakConfidence,
+            float minimumPoseQuality,
+            float poseBypassConfidence,
+            int maximumTargets)
+        {
+            var candidates = new List<Prediction>();
+            foreach (var p in predictions)
+            {
+                bool strongConf   = p.Confidence >= poseBypassConfidence;
+                bool weakConf     = p.Confidence >= weakConfidence;
+                bool goodPose     = p.PoseQuality >= minimumPoseQuality;
+                bool twoKeypoints = CountReliableKeypoints(p.Keypoints, 0.4f) >= 2;
+                bool goodProps    = HasValidBodyProportions(
+                    p.ScreenRectangle.Width > 0 ? p.ScreenRectangle : p.Rectangle);
+
+                string reason;
+                if (strongConf && (goodPose || twoKeypoints || goodProps))
+                    reason = "strong-conf+secondary";
+                else if (weakConf && goodPose)
+                    reason = "weak-conf+pose";
+                else if (weakConf && twoKeypoints)
+                    reason = "weak-conf+keypoints";
+                else if (weakConf && goodProps)
+                    reason = "weak-conf+proportions";
+                else
+                    continue;
+
+                p.AdmissionReason = reason;
+                p.Evidence = BuildEvidence(p);
+                candidates.Add(p);
+            }
+
+            candidates.Sort((a, b) => b.Evidence.QualityScore.CompareTo(a.Evidence.QualityScore));
+            // Target ceiling is enforced by TrackManager.MaximumActiveTracks after cross-tile
+            // deduplication. Applying it here would prematurely discard valid detections from
+            // other tiles before the tracker can merge duplicates.
+            return candidates;
+        }
+
+        private static int CountReliableKeypoints(PlayerKeypoints? kp, float threshold)
+        {
+            if (kp == null) return 0;
+            int n = 0;
+            if (kp.Head.Visibility   >= threshold) n++;
+            if (kp.Neck.Visibility   >= threshold) n++;
+            if (kp.Chest.Visibility  >= threshold) n++;
+            if (kp.Hip.Visibility    >= threshold) n++;
+            return n;
+        }
+
+        private static bool HasValidBodyProportions(RectangleF box)
+        {
+            if (box.Width <= 0 || box.Height <= 0) return false;
+            float aspect = box.Height / box.Width;
+            return aspect is >= 1.2f and <= 6.0f;
+        }
+
+        private static float MeanKeypointVisibility(PlayerKeypoints kp) =>
+            (kp.Head.Visibility + kp.Neck.Visibility + kp.Chest.Visibility + kp.Hip.Visibility) / 4f;
+
+        private static CandidateEvidence BuildEvidence(Prediction p)
+        {
+            int validKps = CountReliableKeypoints(p.Keypoints, 0.4f);
+            float meanKpConf = p.Keypoints != null ? MeanKeypointVisibility(p.Keypoints) : 0f;
+            RectangleF box   = p.ScreenRectangle.Width > 0 ? p.ScreenRectangle : p.Rectangle;
+            float aspect     = box.Width > 0 ? box.Height / box.Width : 0f;
+            float propScore  = (aspect is >= 1.2f and <= 6.0f)
+                ? Math.Clamp(1f - MathF.Abs(aspect - 2.5f) / 3.5f, 0f, 1f) : 0f;
+
+            float quality = p.Confidence  * 0.30f
+                          + p.PoseQuality * 0.30f
+                          + validKps / 4f * 0.20f
+                          + propScore     * 0.20f;
+
+            return new CandidateEvidence
+            {
+                ModelConfidence        = p.Confidence,
+                ValidKeypoints         = validKps,
+                MeanKeypointConfidence = meanKpConf,
+                PoseGeometry           = p.PoseQuality,
+                BodyProportion         = propScore,
+                QualityScore           = Math.Clamp(quality, 0f, 1f),
+            };
+        }
+
         internal static List<Prediction> CreatePredictions(
             Tensor<float> outputTensor,
             Rectangle detectionBox,
@@ -23,7 +128,10 @@ namespace Aimmy2.AILogic
             float cursorExclusionRadius = 0f,
             float captureToModelScale = 1f,
             int keypointCount = 0,
-            bool keypointVisibilityIsLogit = false)
+            bool keypointVisibilityIsLogit = false,
+            float nmsIouThreshold = 0.45f,
+            float keypointConfidenceThreshold = 0.40f,
+            bool circularFov = true)
         {
             // When the actual captured screen region is smaller than the model's input size
             // (true optical zoom: capture fewer real pixels, then upscale to imageSize before
@@ -104,7 +212,7 @@ namespace Aimmy2.AILogic
                 // Circular FOV check: discard detections whose center is outside the FOV circle.
                 float fdx = xCenter - fovCenterX;
                 float fdy = yCenter - fovCenterY;
-                if (fdx * fdx + fdy * fdy > fovCircleRadiusSq) continue;
+                if (circularFov && fdx * fdx + fdy * fdy > fovCircleRadiusSq) continue;
 
                 // Discard detections whose center falls inside the bottom viewmodel-exclusion band.
                 if (viewmodelExclusionFraction > 0f && yCenter >= viewmodelExclusionY) continue;
@@ -139,7 +247,12 @@ namespace Aimmy2.AILogic
                     }
                 }
 
-                predictions.Add(new Prediction
+                float heightFraction = height / imageSize;
+                CandidateScale scale = heightFraction >= 0.5f ? CandidateScale.Large
+                                     : heightFraction >= 0.15f ? CandidateScale.Medium
+                                     : CandidateScale.Small;
+
+                var prediction = new Prediction
                 {
                     Rectangle = new RectangleF(realX, realY, realWidth, realHeight),
                     ScreenRectangle = new RectangleF(
@@ -155,11 +268,15 @@ namespace Aimmy2.AILogic
                     ScreenCenterX = detectionBox.Left + realCenterX,
                     ScreenCenterY = detectionBox.Top + realCenterY,
                     Keypoints = keypoints,
-                });
+                    Scale = scale,
+                };
+                prediction.PoseQuality = PoseGeometryValidator.Score(
+                    keypoints, prediction.ScreenRectangle, keypointConfidenceThreshold);
+                predictions.Add(prediction);
             }
 
             // NMS: remove duplicate boxes for the same target (sorted by confidence, suppress overlapping same-class boxes)
-            return ApplyNms(predictions, nmsIouThreshold: 0.45f);
+            return ApplyNms(predictions, Math.Clamp(nmsIouThreshold, 0f, 1f));
         }
 
         private static PlayerKeypoints DecodeKeypoints(

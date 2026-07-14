@@ -43,6 +43,7 @@ namespace Aimmy2.Class
             { "Opacity", 1 },
             { "Gamepad Assist Strength", 3.0 },
             { "Gamepad Assist Smoothness", 0.10 },
+            { "Gamepad Recoil Compensation", 0.0 },
             { "Viewmodel Exclusion Zone", 20 },
             { "Cursor Exclusion Radius", 30 }
         };

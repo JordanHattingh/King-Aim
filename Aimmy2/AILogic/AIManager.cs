@@ -130,6 +130,8 @@ namespace Aimmy2.AILogic
 
         private readonly CaptureManager _captureManager = new();
         private readonly StickyAimSelector _stickyAimSelector = new();
+        private readonly MultiScaleCapturePlanner _capturePlanner = new();
+        private readonly TemporalDetectionGate _temporalDetectionGate = new();
 
         // ── Training data logger ──────────────────────────────────────────────────
         private readonly TrackLogger _trackLogger = new();
@@ -191,6 +193,7 @@ namespace Aimmy2.AILogic
         public double CaptureFps { get; private set; }
         public double InferenceMs { get; private set; }
         public double FrameAge { get; private set; }
+        private DateTime _lastRuntimeHeartbeat = DateTime.MinValue;
         public int PlayerDetections { get; private set; }
         public int EnemyDetections { get; private set; }
         public int FriendlyDetections { get; private set; }
@@ -800,7 +803,8 @@ namespace Aimmy2.AILogic
 
                                     if (closestPrediction == null)
                                     {
-                                        if (DetectedPlayerOverlay != null)
+                                        bool retainTiledTracks = _activeManifest?.MultiScaleTiling == true && ActiveTracks > 0;
+                                        if (DetectedPlayerOverlay != null && !retainTiledTracks)
                                             DisableOverlay(DetectedPlayerOverlay);
                                         continue;
                                     }
@@ -841,7 +845,7 @@ namespace Aimmy2.AILogic
             }
             catch (Exception ex)
             {
-                Log(LogLevel.Error, $"AI loop stopped: {ex.Message}", true, 5000);
+                Log(LogLevel.Error, $"AI loop stopped: {ex}", true, 5000);
             }
         }
 
@@ -909,7 +913,9 @@ namespace Aimmy2.AILogic
                     RoiTargetSnapshot? roiTarget = Volatile.Read(ref _roiTargetSnapshot);
                     RectangleF lastBox = roiTarget?.BoundingBox ?? RectangleF.Empty;
                     DateTime captureDecisionTime = DateTime.UtcNow;
-                    bool roiFrame = (captureDecisionTime - _lastFullFovCaptureAt).TotalMilliseconds < RoiRefreshIntervalMs;
+                    bool multiScalePose = _activeManifest?.IsPoseModel == true && _activeManifest.MultiScaleTiling;
+                    bool roiFrame = !multiScalePose &&
+                        (captureDecisionTime - _lastFullFovCaptureAt).TotalMilliseconds < RoiRefreshIntervalMs;
 
                     if (roiFrame && roiTarget != null && lastBox.Width > 0 && lastBox.Height > 0)
                     {
@@ -936,16 +942,27 @@ namespace Aimmy2.AILogic
                     }
                     else
                     {
-                        // Full FOV path (dynamic FOV or fallback).
-                        bool useDynamicFov = AimSettings.DynamicFovEnabled;
-                        int captureSize = IMAGE_SIZE;
-                        if (useDynamicFov)
+                        if (multiScalePose)
                         {
-                            int dynamicSize = (int)AimSettings.DynamicFovSize;
-                            captureSize = Math.Clamp(dynamicSize, 10, IMAGE_SIZE);
+                            var displayBounds = new Rectangle(ScreenLeft, ScreenTop, ScreenWidth, ScreenHeight);
+                            int requestedTileSize = _activeManifest?.TileSize ?? 640;
+                            float overlap = _activeManifest?.TileOverlap ?? 0.20f;
+                            detectionBox = _capturePlanner.Next(displayBounds, requestedTileSize, overlap);
+                            captureToModelScale = detectionBox.Width / (float)IMAGE_SIZE;
                         }
-                        captureToModelScale = captureSize / (float)IMAGE_SIZE;
-                        detectionBox = CreateDetectionBox(true, captureSize);
+                        else
+                        {
+                            // Full FOV path (dynamic FOV or fallback).
+                            bool useDynamicFov = AimSettings.DynamicFovEnabled;
+                            int captureSize = IMAGE_SIZE;
+                            if (useDynamicFov)
+                            {
+                                int dynamicSize = (int)AimSettings.DynamicFovSize;
+                                captureSize = Math.Clamp(dynamicSize, 10, IMAGE_SIZE);
+                            }
+                            captureToModelScale = captureSize / (float)IMAGE_SIZE;
+                            detectionBox = CreateDetectionBox(true, captureSize);
+                        }
                         _lastFullFovCaptureAt = captureDecisionTime;
                     }
 
@@ -961,7 +978,9 @@ namespace Aimmy2.AILogic
                             frameId,
                             captureStart, captureEnd,
                             detectionBox.Width, detectionBox.Height,
-                            detectionBox, bmp, captureToModelScale));
+                            detectionBox, bmp, captureToModelScale,
+                            multiScalePose ? _capturePlanner.LastRegionIndex : -1,
+                            multiScalePose ? _capturePlanner.RegionCount : 1));
                         RecordCaptureCompleted(captureEnd);
                     }
 
@@ -1026,6 +1045,8 @@ namespace Aimmy2.AILogic
                     }
 
                     DetectedPlayerOverlay.DetectedPlayerFocus.Opacity = 0;
+                    DetectedPlayerOverlay.UpdatePose(null);
+                    DetectedPlayerOverlay.ClearDetections();
                 });
             }
         }
@@ -1111,6 +1132,8 @@ namespace Aimmy2.AILogic
                     centerX - (LastDetectionBox.Width / 2.0), centerY, 0, 0);
                 DetectedPlayerOverlay.DetectedPlayerFocus.Width = LastDetectionBox.Width;
                 DetectedPlayerOverlay.DetectedPlayerFocus.Height = LastDetectionBox.Height;
+                DetectedPlayerOverlay.UpdatePose(closestPrediction.Keypoints,
+                    _activeManifest?.KeypointConfidence ?? 0.40f);
             });
         }
 
@@ -1361,6 +1384,9 @@ namespace Aimmy2.AILogic
                     return null;
                 }
 
+                PredictionFilter.OutputSummary outputSummary =
+                    PredictionFilter.SummarizeSingleClassPose(outputTensor, NUM_DETECTIONS);
+
                 // Calculate the FOV boundaries. Dynamic FOV zoom is applied earlier, at capture
                 // time (a smaller real screen region upscaled to IMAGE_SIZE) — this FOV filter
                 // stays independent of that and always uses the configured FOV Size against the
@@ -1377,9 +1403,12 @@ namespace Aimmy2.AILogic
                 using (Benchmark("PrepareKDTreeData"))
                 {
                     float productConfidenceThreshold = AimSettings.MinimumConfidence;
-                    float minConfidence = (_calibrationMlp.IsLoaded || AimSettings.DetectionLogging)
-                        ? Math.Min(productConfidenceThreshold, 0.05f)
+                    float candidateConfidenceThreshold = _activeManifest?.IsPoseModel == true
+                        ? Math.Min(productConfidenceThreshold, _activeManifest.WeakPoseConfidence)
                         : productConfidenceThreshold;
+                    float minConfidence = (_calibrationMlp.IsLoaded || AimSettings.DetectionLogging)
+                        ? Math.Min(candidateConfidenceThreshold, 0.05f)
+                        : candidateConfidenceThreshold;
                     string selectedClass = AimSettings.TargetClass;
 
                     var cursorScreenPos = WinAPICaller.GetCursorPosition();
@@ -1396,6 +1425,10 @@ namespace Aimmy2.AILogic
 
                     int keypointCount = _activeManifest?.IsPoseModel == true
                         ? _activeManifest.KeypointCount : 0;
+                    bool tiledCapture = _activeManifest?.MultiScaleTiling == true;
+                    float viewmodelExclusion = (float)AimSettings.ViewmodelExclusion;
+                    if (tiledCapture && detectionBox.Bottom < ScreenTop + ScreenHeight)
+                        viewmodelExclusion = 0f;
 
                     KDPredictions = PredictionFilter.CreatePredictions(
                         outputTensor,
@@ -1410,12 +1443,15 @@ namespace Aimmy2.AILogic
                         fovMaxX,
                         fovMinY,
                         fovMaxY,
-                        (float)AimSettings.ViewmodelExclusion,
+                        viewmodelExclusion,
                         cursorLocalPosition,
                         (float)AimSettings.CursorExclusionRadius,
                         captureToModelScale,
                         keypointCount,
-                        _activeManifest?.KeypointVisibilityIsLogit ?? false);
+                        _activeManifest?.KeypointVisibilityIsLogit ?? false,
+                        _activeManifest?.NmsIou ?? 0.45f,
+                        _activeManifest?.KeypointConfidence ?? 0.40f,
+                        circularFov: !tiledCapture);
                 }
 
                 // Build calibration samples from raw confidence BEFORE overwriting it,
@@ -1470,9 +1506,25 @@ namespace Aimmy2.AILogic
                     float finalThreshold = _calibrationMlp.IsLoaded
                         ? Math.Max(AimSettings.MinimumConfidence, calibratedFloor)
                         : AimSettings.MinimumConfidence;
-                    KDPredictions = KDPredictions
-                        .Where(p => p.Confidence >= finalThreshold)
-                        .ToList();
+                    bool poseModel = _activeManifest?.IsPoseModel == true;
+                    float weakThreshold = poseModel
+                        ? Math.Min(finalThreshold, _activeManifest?.WeakPoseConfidence ?? finalThreshold)
+                        : finalThreshold;
+                    float minimumPoseQuality = _activeManifest?.MinimumPoseQuality ?? 1f;
+                    float poseBypassConfidence = _activeManifest?.PoseBypassConfidence ?? 1f;
+                    KDPredictions = poseModel
+                        ? PredictionFilter.RankPoseCandidates(
+                            KDPredictions, weakThreshold, minimumPoseQuality, poseBypassConfidence,
+                            _activeManifest?.MaximumConcurrentTargets ?? int.MaxValue)
+                        : KDPredictions.Where(p => p.Confidence >= finalThreshold).ToList();
+
+                    if (poseModel)
+                    {
+                        int confirmationFrames = _activeManifest?.WeakPoseConfirmationFrames ?? 2;
+                        KDPredictions = _temporalDetectionGate.Filter(
+                            KDPredictions, finalThreshold, confirmationFrames,
+                            capturedFrame?.CaptureCompletedAt ?? DateTime.UtcNow).ToList();
+                    }
                 }
 
                 using (Benchmark("GamepadAssistPipeline"))
@@ -1481,6 +1533,34 @@ namespace Aimmy2.AILogic
                         KDPredictions,
                         detectionBox,
                         capturedFrame?.CaptureCompletedAt ?? DateTime.UtcNow);
+                }
+
+                if ((DateTime.UtcNow - _lastRuntimeHeartbeat).TotalSeconds >= 1)
+                {
+                    _lastRuntimeHeartbeat = DateTime.UtcNow;
+                    RuntimeDiagnostics.Heartbeat(new
+                    {
+                        frame_received = capturedFrame != null,
+                        capture_width = frame.Width,
+                        capture_height = frame.Height,
+                        capture_fps = CaptureFps,
+                        inference_attempted = _lastPredictionRanInference,
+                        provider = _usingDirectML ? "DirectML" : "CPU",
+                        tensor_shape = new[] { 1, 3, IMAGE_SIZE, IMAGE_SIZE },
+                        output_shape = outputTensor.Dimensions.ToArray(),
+                        raw_maximum_confidence = outputSummary.MaximumConfidence,
+                        rows_above_005 = outputSummary.RowsAbove005,
+                        rows_above_050 = outputSummary.RowsAbove050,
+                        decoded_nms_count = KDPredictions.Count,
+                        tiled_capture = _activeManifest?.MultiScaleTiling == true,
+                        tile_regions = _capturePlanner.RegionCount,
+                        tracker_count = _trackManager.ActiveTracks.Count,
+                        overlay_enabled = AimSettings.ShowDetectedPlayer,
+                        overlay_count = AimSettings.ShowDetectedPlayer ? KDPredictions.Count : 0,
+                        detection_logging = AimSettings.DetectionLogging,
+                        inference_ms = InferenceMs,
+                        frame_age_ms = FrameAge,
+                    });
                 }
 
                 if (KDPredictions.Count == 0)
@@ -1627,6 +1707,7 @@ namespace Aimmy2.AILogic
             _trackManager.ScreenHeight = ScreenHeight;
             _trackManager.ScreenLeft = ScreenLeft;
             _trackManager.ScreenTop = ScreenTop;
+            _trackManager.MaximumActiveTracks = _activeManifest?.MaximumConcurrentTargets ?? int.MaxValue;
 
             // Tracking motion belongs to the frame observation timestamp, not to the later
             // processing time after capture/inference latency. Selection age still uses `now`.
@@ -1666,6 +1747,15 @@ namespace Aimmy2.AILogic
             ErrorY = selection.ErrorY;
             TargetVelocityX = selection.TargetVelocityX;
             TargetVelocityY = selection.TargetVelocityY;
+
+            if (Dictionary.DetectedPlayerOverlay is { } overlay)
+            {
+                IReadOnlyList<Track> overlayTracks = tracks.ToArray();
+                int? selectedId = SelectedTrackId;
+                float keypointThreshold = _activeManifest?.KeypointConfidence ?? 0.40f;
+                Application.Current.Dispatcher.BeginInvoke(() =>
+                    overlay.UpdateDetections(overlayTracks, selectedId, keypointThreshold));
+            }
 
             // Publish the selected track atomically for the independent capture task. A null
             // selection immediately clears ROI ownership and generic movement-model context.
@@ -1754,13 +1844,25 @@ namespace Aimmy2.AILogic
                 assistRx,
                 assistRy);
 
+            // Recoil compensation: when the player is firing (RT > threshold), apply an upward Y
+            // correction to counteract weapon recoil pushing the aim down. Gated purely on firing
+            // input — never on target detection state — so it works even when no target is visible.
+            // Negative RY = look up in XInput convention. Strength is user-configurable (0–1).
+            if (physicalState.Connected && physicalState.RightTrigger > 0.5f)
+            {
+                float recoilStrength = (float)AimSettings.GamepadRecoilCompensation;
+                if (recoilStrength > 0f)
+                {
+                    float recoilCorrection = -recoilStrength * physicalState.RightTrigger;
+                    ry = Math.Clamp(ry + recoilCorrection, -1f, 1f);
+                }
+            }
+
             RX = rx;
             RY = ry;
 
             if (GamepadAssistEnabled && _gamepadOutput != null)
             {
-                // Preserve the player's trigger/buttons exactly. Vision does not synthesize firing
-                // and the perception pipeline does not apply recoil compensation to controller output.
                 _gamepadOutput.SetFullState(physicalState, rx, ry, rtOverride: null);
             }
 
