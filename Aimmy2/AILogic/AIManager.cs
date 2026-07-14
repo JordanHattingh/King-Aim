@@ -1709,6 +1709,14 @@ namespace Aimmy2.AILogic
             _trackManager.ScreenTop = ScreenTop;
             _trackManager.MaximumActiveTracks = _activeManifest?.MaximumConcurrentTargets ?? int.MaxValue;
 
+            // Enable pose-keypoint cosine similarity in association when the active model has pose output.
+            // Disabled for detection-only models because they never populate track keypoints.
+            bool isPose = _activeManifest?.IsPoseModel == true;
+            _trackManager.AssociationSettings.PoseSimilarityWeight = isPose ? 0.15f : 0f;
+
+            // Require the manifest's StableFrameRequirement before a track is eligible for selection.
+            _targetSelector.MinimumObservationCount = _activeManifest?.StableFrameRequirement ?? 2;
+
             // Tracking motion belongs to the frame observation timestamp, not to the later
             // processing time after capture/inference latency. Selection age still uses `now`.
             IReadOnlyList<Track> tracks = _trackManager.Update(predictions, classRoles, observationTime);

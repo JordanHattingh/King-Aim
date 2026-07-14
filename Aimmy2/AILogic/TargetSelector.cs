@@ -26,10 +26,13 @@ namespace Aimmy2.AILogic
         public double SwitchConfirmationMs { get; set; } = 100.0;
 
         /// <summary>Maximum age of a real observation before the track becomes ineligible.</summary>
-        public double MaximumObservationAgeMs { get; set; } = 250.0;
+        public double MaximumObservationAgeMs { get; set; } = 500.0;
 
-        /// <summary>Required fractional distance improvement. 0.30 means challenger must be at least 30% closer.</summary>
-        public float SwitchAdvantageThreshold { get; set; } = 0.30f;
+        /// <summary>Required fractional distance improvement. 0.20 means challenger must be at least 20% closer.</summary>
+        public float SwitchAdvantageThreshold { get; set; } = 0.20f;
+
+        /// <summary>Minimum observations before a track is eligible for selection. Filters 1-frame false positives.</summary>
+        public int MinimumObservationCount { get; set; } = 2;
 
         public TargetSelectionResult Select(
             IReadOnlyList<Track> tracks,
@@ -58,8 +61,14 @@ namespace Aimmy2.AILogic
             }
 
             var scored = eligible
-                .Select(t => (Track: t, DistSq: DistanceSq(TrackCenter(t.BoundingBox), screenCenter)))
-                .OrderBy(x => x.DistSq)
+                .Select(t =>
+                {
+                    float distSq = DistanceSq(TrackCenter(t.BoundingBox), screenCenter);
+                    // Weight score so confident, stable tracks beat a noisy close-range false positive.
+                    float quality = Math.Max(0.01f, t.Confidence * Math.Clamp(t.ObservationCount / 10f, 0.1f, 1f));
+                    return (Track: t, Score: distSq / quality);
+                })
+                .OrderBy(x => x.Score)
                 .ToList();
 
             Track best = scored[0].Track;
@@ -81,10 +90,10 @@ namespace Aimmy2.AILogic
             }
             else
             {
-                float currentDistSq = DistanceSq(TrackCenter(current.BoundingBox), screenCenter);
-                float bestDistSq = scored[0].DistSq;
+                float currentScore = scored.First(x => x.Track.TrackId == current.TrackId).Score;
+                float bestScore    = scored[0].Score;
                 float requiredRatio = Math.Clamp(1f - SwitchAdvantageThreshold, 0f, 1f);
-                bool meaningfullyBetter = bestDistSq < currentDistSq * requiredRatio;
+                bool meaningfullyBetter = bestScore < currentScore * requiredRatio;
 
                 if (meaningfullyBetter)
                 {
@@ -143,7 +152,7 @@ namespace Aimmy2.AILogic
             };
         }
 
-        private static List<Track> FilterEligible(
+        private List<Track> FilterEligible(
             IReadOnlyList<Track> tracks,
             TargetMode mode,
             SemanticRole roleFilter,
@@ -153,13 +162,18 @@ namespace Aimmy2.AILogic
         {
             IEnumerable<Track> query = tracks.Where(t =>
                 t.Role != SemanticRole.Ignore &&
+                t.ObservationCount >= MinimumObservationCount &&
                 Math.Max(0, (now - t.LastSeen).TotalMilliseconds) <= maximumObservationAgeMs);
 
             switch (mode)
             {
                 case TargetMode.EnemyOnly:
-                    query = query.Where(t => t.Role == SemanticRole.Enemy);
-                    break;
+                    var enemies = query.Where(t => t.Role == SemanticRole.Enemy).ToList();
+                    // If the manifest assigns no Enemy roles (e.g. no manifest or Unknown-only model),
+                    // fall through to all non-Ignore tracks so the assist still functions.
+                    if (enemies.Count > 0) return enemies;
+                    return query.ToList();
+
                 case TargetMode.PlayerClass:
                     query = query.Where(t => t.Role == SemanticRole.Player);
                     break;
